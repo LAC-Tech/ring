@@ -35,6 +35,7 @@ name = "ring"
 version = "0.1.0"
 dependencies = [
  "rustix",
+ "rustix-uring",
 ]
 
 [[package]]
@@ -48,6 +49,16 @@ dependencies = [
  "libc",
  "linux-raw-sys",
  "windows-sys",
+]
+
+[[package]]
+name = "rustix-uring"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f180cb36639fbd3e5e12812e1e18d3b93ca05648e94bc8edc8d48bf5089cace"
+dependencies = [
+ "bitflags",
+ "rustix",
 ]
 
 [[package]]

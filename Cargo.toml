@@ -5,3 +5,4 @@ edition = "2021"
 
 [dependencies]
 rustix = { version = "0.38.42", features = ["io_uring"] }
+rustix-uring = "*"

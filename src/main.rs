@@ -51,7 +51,7 @@ fn main() {
 
         for cqe in cq {
             let client_ptr = cqe.user_data() as *mut Socket;
-            let client = unsafe { &mut *client_ptr };
+            let client: &mut Socket = unsafe { &mut *client_ptr };
 
             if cqe.result() < 0 {
                 eprintln!(
@@ -63,10 +63,9 @@ fn main() {
             }
             match client.state {
                 State::Accept => {
-                    // Create socket for clint connection
-                    let client_handle = cqe.result();
+                    // Create socket for client connection
                     let client = Box::new(Socket {
-                        handle: client_handle,
+                        handle: cqe.result(),
                         buffer: [0u8; 1024],
                         state: State::Recv,
                     });
@@ -84,7 +83,7 @@ fn main() {
 
                     // Prepare next accept
                     let accept_e = opcode::Accept::new(
-                        types::Fd(server.handle.as_raw_fd()),
+                        types::Fd(server.handle),
                         ptr::null_mut(),
                         ptr::null_mut(),
                     )

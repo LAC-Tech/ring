@@ -20,18 +20,23 @@ struct Socket {
     state: State,
 }
 
+impl Socket {
+    fn new(handle: i32, state: State) -> Self {
+        Self {
+            handle,
+            buffer: [0u8; 1024],
+            state,
+        }
+    }
+}
+
 // TCP Echo server
 // nc localhost 12345
 fn main() {
     // Initialize io_uring
     let mut ring = IoUring::new(32).unwrap();
     let listener = std::net::TcpListener::bind(("127.0.0.1", 12345)).unwrap();
-
-    let server = Socket {
-        handle: listener.as_raw_fd(),
-        buffer: [0u8; 1024],
-        state: State::Accept,
-    };
+    let server = Socket::new(listener.as_raw_fd(), State::Accept);
 
     let accept_e = opcode::Accept::new(types::Fd(server.handle), ptr::null_mut(), ptr::null_mut())
         .build()
@@ -53,28 +58,25 @@ fn main() {
             let client_ptr = cqe.user_data() as *mut Socket;
             let client: &mut Socket = unsafe { &mut *client_ptr };
 
-            if cqe.result() < 0 {
+            let result = cqe.result();
+
+            if result < 0 {
                 eprintln!(
                     "Error in state {:?}: {}",
                     client.state,
-                    io::Error::from_raw_os_error(-cqe.result())
+                    io::Error::from_raw_os_error(-result)
                 );
                 continue;
             }
             match client.state {
                 State::Accept => {
                     // Create socket for client connection
-                    let client = Box::new(Socket {
-                        handle: cqe.result(),
-                        buffer: [0u8; 1024],
-                        state: State::Recv,
-                    });
-
+                    let client = Box::new(Socket::new(result, State::Recv));
                     let client_ptr = Box::into_raw(client);
 
                     // Prepare recv op
                     let recv_e = opcode::Recv::new(
-                        types::Fd(unsafe { (*client_ptr).handle.as_raw_fd() }),
+                        types::Fd(unsafe { (*client_ptr).handle }),
                         unsafe { (*client_ptr).buffer.as_mut_ptr() },
                         1024,
                     )
@@ -95,7 +97,7 @@ fn main() {
                     }
                 }
                 State::Recv => {
-                    let read = cqe.result() as usize;
+                    let read = result as usize;
                     if read == 0 {
                         // Connection closed
                         unsafe {

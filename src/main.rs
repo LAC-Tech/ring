@@ -15,7 +15,7 @@ enum State {
 }
 
 struct Socket {
-    handle: OwnedFd,
+    handle: i32,
     buffer: [u8; 1024],
     state: State,
 }
@@ -25,26 +25,17 @@ struct Socket {
 fn main() {
     // Initialize io_uring
     let mut ring = IoUring::new(32).unwrap();
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 12345)).unwrap();
 
-    let handle = socket(AddressFamily::INET, SocketType::STREAM, Some(ipproto::TCP)).unwrap();
     let server = Socket {
-        handle,
+        handle: listener.as_raw_fd(),
         buffer: [0u8; 1024],
         state: State::Accept,
     };
 
-    let addr = SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 12345);
-    set_socket_reuseaddr(&server.handle, true).unwrap();
-    bind_v4(&server.handle, &addr).unwrap();
-    listen(&server.handle, 128).unwrap();
-
-    let accept_e = opcode::Accept::new(
-        types::Fd(server.handle.as_raw_fd()),
-        ptr::null_mut(),
-        ptr::null_mut(),
-    )
-    .build()
-    .user_data(ptr::addr_of!(server) as u64);
+    let accept_e = opcode::Accept::new(types::Fd(server.handle), ptr::null_mut(), ptr::null_mut())
+        .build()
+        .user_data(ptr::addr_of!(server) as u64);
 
     unsafe {
         ring.submission()
@@ -73,7 +64,7 @@ fn main() {
             match client.state {
                 State::Accept => {
                     // Create socket for clint connection
-                    let client_handle = unsafe { rustix::fd::OwnedFd::from_raw_fd(cqe.result()) };
+                    let client_handle = cqe.result();
                     let client = Box::new(Socket {
                         handle: client_handle,
                         buffer: [0u8; 1024],

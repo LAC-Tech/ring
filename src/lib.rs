@@ -2,14 +2,13 @@
 
 use core::sync::atomic::{AtomicU32, Ordering};
 use core::{assert, assert_eq, assert_ne, cmp, ffi, mem, ptr};
-use rustix::fd::{BorrowedFd, OwnedFd};
+use rustix::fd::{AsFd, BorrowedFd, OwnedFd};
 use rustix::io;
 use rustix::io_uring::{
     io_uring_cqe, io_uring_enter, io_uring_params, io_uring_setup,
     io_uring_sqe, IoringEnterFlags, IoringFeatureFlags, IoringOp,
     IoringSetupFlags, IORING_OFF_SQES, IORING_OFF_SQ_RING,
 };
-use std::os::fd::AsFd;
 
 use rustix::mm;
 

@@ -8,9 +8,10 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use core::{assert, assert_eq, assert_ne, cmp, ffi, mem, ptr};
 use rustix::fd::{AsFd, BorrowedFd, OwnedFd};
 use rustix::io_uring::{
-    io_uring_cqe, io_uring_enter, io_uring_params, io_uring_setup,
-    io_uring_sqe, IoringEnterFlags, IoringFeatureFlags, IoringOp,
-    IoringSetupFlags, IORING_OFF_SQES, IORING_OFF_SQ_RING,
+    io_cqring_offsets, io_sqring_offsets, io_uring_cqe, io_uring_enter,
+    io_uring_params, io_uring_setup, io_uring_sqe, IoringEnterFlags,
+    IoringFeatureFlags, IoringOp, IoringSetupFlags, IORING_OFF_SQES,
+    IORING_OFF_SQ_RING,
 };
 use rustix::{io, io_uring};
 
@@ -18,10 +19,14 @@ use rustix::mm;
 
 pub struct IoUring {
     fd: OwnedFd,
-    mmap_sq: RwMmap,
+    // A single mmap call that contains both the sq and cq
+    mmap_rings: RwMmap,
+    // Contains the array with the actual sq entries
     mmap_sq_entries: RwMmap,
     pub flags: IoringSetupFlags,
     pub features: IoringFeatureFlags,
+    pub sq_off: io_sqring_offsets,
+    pub cq_off: io_cqring_offsets,
 }
 
 impl IoUring {
@@ -155,98 +160,101 @@ impl IoUring {
 
         Ok(Self {
             fd,
-            mmap_sq,
+            mmap_rings: mmap_sq,
             mmap_sq_entries,
             flags: p.flags,
             features: p.features,
+            sq_off: p.sq_off,
+            cq_off: p.cq_off,
         })
     }
 
-    pub fn get_sqe(&mut self) -> Option<&mut io_uring_sqe> {
-        let head = unsafe { (*self.mmap_sq.head).load(Ordering::Acquire) };
-        let next = self.mmap_sq.sqe_tail.wrapping_add(1);
-        if next.wrapping_sub(head) > self.mmap_sq.mask + 1 {
-            return None;
+    /*
+        pub fn get_sqe(&mut self) -> Option<&mut io_uring_sqe> {
+            let head = unsafe { (*self.mmap_rings.head).load(Ordering::Acquire) };
+            let next = self.mmap_rings.sqe_tail.wrapping_add(1);
+            if next.wrapping_sub(head) > self.mmap_rings.mask + 1 {
+                return None;
+            }
+            let sqe = unsafe {
+                let s = &mut *self.mmap_rings.sqes.add(
+                    (self.mmap_rings.sqe_tail & self.mmap_rings.mask) as usize,
+                );
+                ptr::write_bytes(s, 0, 1);
+                s
+            };
+            self.mmap_rings.sqe_tail = next;
+            Some(sqe)
         }
-        let sqe = unsafe {
-            let s = &mut *self
-                .mmap_sq
-                .sqes
-                .add((self.mmap_sq.sqe_tail & self.mmap_sq.mask) as usize);
-            ptr::write_bytes(s, 0, 1);
-            s
-        };
-        self.mmap_sq.sqe_tail = next;
-        Some(sqe)
-    }
 
-    pub fn submit(&mut self) -> io::Result<u32> {
-        self.submit_and_wait(0)
-    }
+        pub fn submit(&mut self) -> io::Result<u32> {
+            self.submit_and_wait(0)
+        }
 
-    pub fn submit_and_wait(&mut self, wait_nr: u32) -> io::Result<u32> {
-        let sq = &mut self.mmap_sq;
-        let to_submit = sq.sqe_tail.wrapping_sub(sq.sqe_head);
-        if to_submit > 0 {
-            let mut tail = unsafe { (*sq.tail).load(Ordering::Acquire) };
-            while sq.sqe_head != sq.sqe_tail {
+        pub fn submit_and_wait(&mut self, wait_nr: u32) -> io::Result<u32> {
+            let sq = &mut self.mmap_rings;
+            let to_submit = sq.sqe_tail.wrapping_sub(sq.sqe_head);
+            if to_submit > 0 {
+                let mut tail = unsafe { (*sq.tail).load(Ordering::Acquire) };
+                while sq.sqe_head != sq.sqe_tail {
+                    unsafe {
+                        *sq.array.add((tail & sq.mask) as usize) =
+                            sq.sqe_head & sq.mask;
+                    }
+                    sq.sqe_head = sq.sqe_head.wrapping_add(1);
+                    tail = tail.wrapping_add(1);
+                }
                 unsafe {
-                    *sq.array.add((tail & sq.mask) as usize) =
-                        sq.sqe_head & sq.mask;
+                    (*sq.tail).store(tail, Ordering::Release);
                 }
-                sq.sqe_head = sq.sqe_head.wrapping_add(1);
-                tail = tail.wrapping_add(1);
             }
+
+            let mut flags = IoringEnterFlags::empty();
+            if wait_nr > 0 {
+                flags |= IoringEnterFlags::GETEVENTS;
+            }
+
+            unsafe { io_uring_enter(self.fd.as_fd(), to_submit, wait_nr, flags) }
+        }
+
+        pub fn peek_cqe(&self) -> Option<&io_uring_cqe> {
+            let cq = &self.cq;
+            let head = unsafe { (*cq.head).load(Ordering::Acquire) };
+            if head == unsafe { (*cq.tail).load(Ordering::Acquire) } {
+                return None;
+            }
+            Some(unsafe { &*cq.cqes.add((head & cq.mask) as usize) })
+        }
+
+        pub fn cq_advance(&self, nr: u32) {
+            let cq = &self.cq;
             unsafe {
-                (*sq.tail).store(tail, Ordering::Release);
+                let head = (*cq.head).load(Ordering::Relaxed);
+                (*cq.head).store(head.wrapping_add(nr), Ordering::Release);
             }
         }
 
-        let mut flags = IoringEnterFlags::empty();
-        if wait_nr > 0 {
-            flags |= IoringEnterFlags::GETEVENTS;
-        }
-
-        unsafe { io_uring_enter(self.fd.as_fd(), to_submit, wait_nr, flags) }
-    }
-
-    pub fn peek_cqe(&self) -> Option<&io_uring_cqe> {
-        let cq = &self.cq;
-        let head = unsafe { (*cq.head).load(Ordering::Acquire) };
-        if head == unsafe { (*cq.tail).load(Ordering::Acquire) } {
-            return None;
-        }
-        Some(unsafe { &*cq.cqes.add((head & cq.mask) as usize) })
-    }
-
-    pub fn cq_advance(&self, nr: u32) {
-        let cq = &self.cq;
-        unsafe {
-            let head = (*cq.head).load(Ordering::Relaxed);
-            (*cq.head).store(head.wrapping_add(nr), Ordering::Release);
-        }
-    }
-
-    pub fn copy_cqes(
-        &mut self,
-        cqes: &mut [io_uring_cqe],
-        wait_nr: u32,
-    ) -> io::Result<u32> {
-        let mut count: u32 = 0;
-        while (count as usize) < cqes.len() {
-            if let Some(cqe) = self.peek_cqe() {
-                cqes[count as usize] = unsafe { ptr::read(cqe as *const _) };
-                count += 1;
-                self.cq_advance(1);
-            } else {
-                if count >= wait_nr {
-                    break;
+        pub fn copy_cqes(
+            &mut self,
+            cqes: &mut [io_uring_cqe],
+            wait_nr: u32,
+        ) -> io::Result<u32> {
+            let mut count: u32 = 0;
+            while (count as usize) < cqes.len() {
+                if let Some(cqe) = self.peek_cqe() {
+                    cqes[count as usize] = unsafe { ptr::read(cqe as *const _) };
+                    count += 1;
+                    self.cq_advance(1);
+                } else {
+                    if count >= wait_nr {
+                        break;
+                    }
+                    self.submit_and_wait(wait_nr - count)?;
                 }
-                self.submit_and_wait(wait_nr - count)?;
             }
+            Ok(count)
         }
-        Ok(count)
-    }
+    */
 }
 
 #[derive(Debug)]
@@ -261,20 +269,6 @@ pub enum InitErr {
     PermissionDenied,
     SystemOutdated,
     UnexpectedErrno(io::Errno),
-}
-
-pub struct SubmissionQueue {
-    mask: u32,
-    mmap: RwMmap,
-    mmap_sqes: RwMmap,
-
-    // We use `sqe_head` and `sqe_tail` in the same way as liburing:
-    // We increment `sqe_tail` (but not `tail`) for each call to `get_sqe()`.
-    // We then set `tail` to `sqe_tail` once, only when these events are
-    // actually submitted. This allows us to amortize the cost of the
-    // @atomicStore to `tail` across multiple SQEs.
-    sqe_head: u32,
-    sqe_tail: u32,
 }
 
 struct RwMmap {
@@ -316,10 +310,10 @@ impl Drop for RwMmap {
 impl RwMmap {
     // All our pointer accesses are by u32s
     unsafe fn ptr_at<T>(&self, byte_offset: u32) -> *const T {
-        (self.ptr as *const u8).add(byte_offset) as *const T
+        (self.ptr as *const u8).add(byte_offset as usize) as *const T
     }
 
-    unsafe fn slice_at<T>(&self, byte_offset: usize, count: u32) -> &[T] {
+    unsafe fn slice_at<T>(&self, byte_offset: u32, count: usize) -> &[T] {
         let ptr = self.ptr_at::<T>(byte_offset);
         &*core::ptr::slice_from_raw_parts(ptr, count)
     }
@@ -335,6 +329,7 @@ mod tests {
             IoUring::new(8, IoringSetupFlags::empty()).expect("setup failed");
     }
 
+    /*
     #[test]
     fn test_nop() {
         let mut uring =
@@ -352,4 +347,5 @@ mod tests {
         assert_eq!(count, 1);
         assert_eq!(cqes[0].user_data, 0x42.into());
     }
+    */
 }

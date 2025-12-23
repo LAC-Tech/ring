@@ -1,7 +1,8 @@
-#![cfg_attr(not(test), no_std)]
 // Ported from Zig's standard library io_uring implementation
 // Original: https://codeberg.org/ziglang/zig/src/branch/master/lib/std/os/linux/IoUring.zig
 // Licensed under MIT License (see https://github.com/ziglang/zig/blob/master/LICENSE)
+#![cfg_attr(not(test), no_std)]
+
 // I need to CONSTATLY cast things between usize and u32
 const _: () = assert!(usize::BITS >= 32);
 

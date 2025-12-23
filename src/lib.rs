@@ -1,19 +1,20 @@
 #![cfg_attr(not(test), no_std)]
-
+// Ported from Zig's standard library io_uring implementation
+// Original: https://codeberg.org/ziglang/zig/src/branch/master/lib/std/os/linux/IoUring.zig
+// Licensed under MIT License (see https://github.com/ziglang/zig/blob/master/LICENSE)
 // I need to CONSTATLY cast things between usize and u32
 const _: () = assert!(usize::BITS >= 32);
 
 use core::ffi::c_void;
 use core::sync::atomic::{AtomicU32, Ordering};
-use core::{assert, assert_eq, assert_ne, cmp, ffi, mem, ptr};
+use core::{assert, assert_eq, assert_ne, cmp, mem, ptr};
 use rustix::fd::{AsFd, BorrowedFd, OwnedFd};
+use rustix::io;
 use rustix::io_uring::{
-    io_cqring_offsets, io_sqring_offsets, io_uring_cqe, io_uring_enter,
-    io_uring_params, io_uring_setup, io_uring_sqe, IoringEnterFlags,
-    IoringFeatureFlags, IoringOp, IoringSetupFlags, IORING_OFF_SQES,
-    IORING_OFF_SQ_RING,
+    io_cqring_offsets, io_sqring_offsets, io_uring_cqe, io_uring_params,
+    io_uring_setup, io_uring_sqe, IoringFeatureFlags, IoringSetupFlags,
+    IORING_OFF_SQES, IORING_OFF_SQ_RING,
 };
-use rustix::{io, io_uring};
 
 use rustix::mm;
 

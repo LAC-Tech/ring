@@ -1,53 +1,48 @@
 #![cfg_attr(not(test), no_std)]
 
+// I need to CONSTATLY cast things between usize and u32
+const _: () = assert!(usize::BITS >= 32);
+
+use core::ffi::c_void;
 use core::sync::atomic::{AtomicU32, Ordering};
 use core::{assert, assert_eq, assert_ne, cmp, ffi, mem, ptr};
 use rustix::fd::{AsFd, BorrowedFd, OwnedFd};
-use rustix::io;
 use rustix::io_uring::{
     io_uring_cqe, io_uring_enter, io_uring_params, io_uring_setup,
     io_uring_sqe, IoringEnterFlags, IoringFeatureFlags, IoringOp,
     IoringSetupFlags, IORING_OFF_SQES, IORING_OFF_SQ_RING,
 };
+use rustix::{io, io_uring};
 
 use rustix::mm;
 
 pub struct IoUring {
     fd: OwnedFd,
-    sq: SubmissionQueue,
-    cq: CompletionQueue,
-    _mmap: RwMmap,
-    _mmap_sqes: RwMmap,
+    mmap_sq: RwMmap,
+    mmap_sq_entries: RwMmap,
     pub flags: IoringSetupFlags,
     pub features: IoringFeatureFlags,
 }
 
 impl IoUring {
-    /**
-     * A friendly way to setup an io_uring, with default
-     * rustix::io_uring::io_uring_params.
-     * `entries` must be a power of two between 1 and 32768, although the kernel
-     * will make the final call on how many entries the submission and
-     * completion queues will ultimately have,
-     * see https://github.com/torvalds/linux/blob/v5.8/fs/io_uring.c#L8027-L8050
-     * Matches the interface of io_uring_queue_init() in liburing.
-     */
+    /// A friendly way to setup an io_uring, with default linux.io_uring_params.
+    /// `entries` must be a power of two between 1 and 32768, although the
+    /// kernel will make the final call on how many entries the submission
+    /// and completion queues will ultimately have, see https://github.com/torvalds/linux/blob/v5.8/fs/io_uring.c#L8027-L8050.
+    /// Matches the interface of io_uring_queue_init() in liburing.
     pub fn new(entries: u32, flags: IoringSetupFlags) -> Result<Self, InitErr> {
         let mut params = io_uring_params::default();
         params.flags = flags;
         params.sq_thread_idle = 1000;
-
         Self::new_with_params(entries, &mut params)
     }
 
-    /**
-     * A powerful way to setup an io_uring, if you want to tweak
-     * rustix::io_uring::io_uring_params such as submission queue thread cpu
-     * affinity or thread idle timeout (the kernel and our default is 1 second).
-     * `params` is passed by reference because the kernel needs to modify the
-     * parameters.
-     * Matches the interface of io_uring_queue_init_params() in liburing.
-     */
+    /// A powerful way to setup an io_uring, if you want to tweak
+    /// linux.io_uring_params such as submission queue thread cpu affinity
+    /// or thread idle timeout (the kernel and our default is 1 second).
+    /// `params` is passed by reference because the kernel needs to modify the
+    /// parameters. Matches the interface of io_uring_queue_init_params() in
+    /// liburing.
     pub fn new_with_params(
         entries: u32,
         p: &mut io_uring_params,
@@ -65,98 +60,123 @@ impl IoUring {
         );
         assert!(p.features.is_empty());
         assert!(p.wq_fd == 0 || p.flags.contains(IoringSetupFlags::ATTACH_WQ));
+        assert_eq!(p.resv, [0, 0, 0]);
 
         use io::Errno;
 
-        let fd =
-            unsafe { io_uring_setup(entries, p) }.map_err(
-                |errno| match errno {
-                    Errno::FAULT => {
-                        InitErr::ParamsOutsideAccessibleAddressSpace
-                    }
-                    Errno::INVAL => InitErr::ArgumentsInvalid,
-                    Errno::MFILE => InitErr::ProcessFdQuotaExceeded,
-                    Errno::NFILE => InitErr::SystemFdQuotaExceeded,
-                    Errno::NOMEM => InitErr::SystemResources,
-                    Errno::PERM => InitErr::PermissionDenied,
-                    Errno::NOSYS => InitErr::SystemOutdated,
-                    _ => InitErr::UnexpectedErrno(errno),
-                },
-            )?;
+        let res = unsafe { io_uring_setup(entries, p) };
+        let fd = res.map_err(|errno| match errno {
+            Errno::FAULT => InitErr::ParamsOutsideAccessibleAddressSpace,
+            Errno::INVAL => InitErr::ArgumentsInvalid,
+            Errno::MFILE => InitErr::ProcessFdQuotaExceeded,
+            Errno::NFILE => InitErr::SystemFdQuotaExceeded,
+            Errno::NOMEM => InitErr::SystemResources,
+            Errno::PERM => InitErr::PermissionDenied,
+            Errno::NOSYS => InitErr::SystemOutdated,
+            _ => InitErr::UnexpectedErrno(errno),
+        })?;
 
+        // Kernel versions 5.4 and up use only one mmap() for the submission and
+        // completion queues. This is not an optional feature for us...
+        // if the kernel does it, we have to do it. The thinking on this
+        // by the kernel developers was that both the submission and the
+        // completion queue rings have sizes just over a power of two, but the
+        // submission queue ring is significantly smaller with u32
+        // slots. By bundling both in a single mmap, the kernel gets the
+        // submission queue ring for free. See https://patchwork.kernel.org/patch/11115257 for the kernel patch.
+        // We do not support the double mmap() done before 5.4, because we want
+        // to keep the init/deinit mmap paths simple and because
+        // io_uring has had many bug fixes even since 5.4.
         if !p.features.contains(IoringFeatureFlags::SINGLE_MMAP) {
             return Err(InitErr::SystemOutdated);
         }
 
+        // Check that the kernel has actually set params and that "impossible is
+        // nothing".
         assert_ne!(p.sq_entries, 0);
         assert_ne!(p.cq_entries, 0);
         assert!(p.cq_entries >= p.sq_entries);
 
-        let size = cmp::max(
-            p.sq_off.array as usize
-                + p.sq_entries as usize * mem::size_of::<u32>(),
-            p.cq_off.cqes as usize
-                + p.cq_entries as usize * mem::size_of::<io_uring_cqe>(),
-        );
+        let size = cmp::max::<u32>(
+            p.sq_off.array + p.sq_entries * mem::size_of::<u32>() as u32,
+            p.cq_off.cqes
+                + p.cq_entries * mem::size_of::<io_uring_cqe>() as u32,
+        ) as usize;
 
-        let mmap = RwMmap::new(
+        let mmap_sq = RwMmap::new(
             size,
             fd.as_fd(),
             mm::MapFlags::SHARED | mm::MapFlags::POPULATE,
             IORING_OFF_SQ_RING,
         )
         .map_err(InitErr::UnexpectedErrno)?;
+        assert_eq!(mmap_sq.len, size);
 
-        let sizes_sqe = p.sq_entries as usize * mem::size_of::<io_uring_sqe>();
-        let mmap_sqes = RwMmap::new(
-            sizes_sqe,
+        // TODO: wtf does this mean
+        // "The motivation for the `sqes` and `array` indirection is to make it
+        // possible for the
+        // application to preallocate static linux.io_uring_sqe entries and
+        // then replay them when needed."
+        let size_sqes =
+            (p.sq_entries * mem::size_of::<io_uring_sqe>() as u32) as usize;
+
+        let mmap_sq_entries = RwMmap::new(
+            size_sqes.try_into().unwrap(),
             fd.as_fd(),
             mm::MapFlags::SHARED | mm::MapFlags::POPULATE,
             IORING_OFF_SQES,
         )
         .map_err(InitErr::UnexpectedErrno)?;
+        assert_eq!(mmap_sq_entries.len, size_sqes);
 
-        let sq = unsafe { SubmissionQueue::new(mmap.ptr, mmap_sqes.ptr, p) };
-        let cq = unsafe { CompletionQueue::new(mmap.ptr, p) };
-
+        // Check that our starting state is as we expect.
+        // TODO: make these little private functions if they are used more than
+        // once
         unsafe {
-            assert_eq!((*sq.head).load(Ordering::Acquire), 0);
-            assert_eq!((*sq.tail).load(Ordering::Acquire), 0);
-            assert_eq!(sq.mask, p.sq_entries - 1);
-            assert_eq!((*sq.dropped).load(Ordering::Acquire), 0);
-
-            assert_eq!((*cq.head).load(Ordering::Acquire), 0);
-            assert_eq!((*cq.tail).load(Ordering::Acquire), 0);
-            assert_eq!(cq.mask, p.cq_entries - 1);
-            assert_eq!((*cq.overflow).load(Ordering::Acquire), 0);
+            assert_eq!(*mmap_sq.ptr_at::<u32>(p.sq_off.head), 0);
+            assert_eq!(*mmap_sq.ptr_at::<u32>(p.sq_off.tail), 0);
+            assert_eq!(
+                *mmap_sq.ptr_at::<u32>(p.sq_off.ring_mask),
+                p.sq_entries - 1,
+            );
+            // Allow p.sq_off.flags to be non-zero, since the kernel may set
+            // IORING_SQ_NEED_WAKEUP at any time.
+            assert_eq!(*mmap_sq.ptr_at::<u32>(p.sq_off.dropped), 0);
+        }
+        unsafe {
+            assert_eq!(*mmap_sq.ptr_at::<u32>(p.cq_off.head), 0);
+            assert_eq!(*mmap_sq.ptr_at::<u32>(p.cq_off.tail), 0);
+            assert_eq!(
+                *mmap_sq.ptr_at::<u32>(p.cq_off.ring_mask),
+                p.cq_entries - 1
+            );
+            assert_eq!(*mmap_sq.ptr_at::<u32>(p.cq_off.overflow), 0);
         }
 
         Ok(Self {
             fd,
-            sq,
-            cq,
-            _mmap: mmap,
-            _mmap_sqes: mmap_sqes,
+            mmap_sq,
+            mmap_sq_entries,
             flags: p.flags,
             features: p.features,
         })
     }
 
     pub fn get_sqe(&mut self) -> Option<&mut io_uring_sqe> {
-        let head = unsafe { (*self.sq.head).load(Ordering::Acquire) };
-        let next = self.sq.sqe_tail.wrapping_add(1);
-        if next.wrapping_sub(head) > self.sq.mask + 1 {
+        let head = unsafe { (*self.mmap_sq.head).load(Ordering::Acquire) };
+        let next = self.mmap_sq.sqe_tail.wrapping_add(1);
+        if next.wrapping_sub(head) > self.mmap_sq.mask + 1 {
             return None;
         }
         let sqe = unsafe {
             let s = &mut *self
-                .sq
+                .mmap_sq
                 .sqes
-                .add((self.sq.sqe_tail & self.sq.mask) as usize);
+                .add((self.mmap_sq.sqe_tail & self.mmap_sq.mask) as usize);
             ptr::write_bytes(s, 0, 1);
             s
         };
-        self.sq.sqe_tail = next;
+        self.mmap_sq.sqe_tail = next;
         Some(sqe)
     }
 
@@ -165,7 +185,7 @@ impl IoUring {
     }
 
     pub fn submit_and_wait(&mut self, wait_nr: u32) -> io::Result<u32> {
-        let sq = &mut self.sq;
+        let sq = &mut self.mmap_sq;
         let to_submit = sq.sqe_tail.wrapping_sub(sq.sqe_head);
         if to_submit > 0 {
             let mut tail = unsafe { (*sq.tail).load(Ordering::Acquire) };
@@ -244,61 +264,21 @@ pub enum InitErr {
 }
 
 pub struct SubmissionQueue {
-    head: *const AtomicU32,
-    tail: *const AtomicU32,
     mask: u32,
-    _flags: *const AtomicU32,
-    dropped: *const AtomicU32,
-    array: *mut u32,
-    sqes: *mut io_uring_sqe,
+    mmap: RwMmap,
+    mmap_sqes: RwMmap,
+
+    // We use `sqe_head` and `sqe_tail` in the same way as liburing:
+    // We increment `sqe_tail` (but not `tail`) for each call to `get_sqe()`.
+    // We then set `tail` to `sqe_tail` once, only when these events are
+    // actually submitted. This allows us to amortize the cost of the
+    // @atomicStore to `tail` across multiple SQEs.
     sqe_head: u32,
     sqe_tail: u32,
 }
 
-impl SubmissionQueue {
-    unsafe fn new(
-        ptr: *mut ffi::c_void,
-        ptr_sqes: *mut ffi::c_void,
-        p: &io_uring_params,
-    ) -> Self {
-        Self {
-            head: ptr.add(p.sq_off.head as usize) as *const AtomicU32,
-            tail: ptr.add(p.sq_off.tail as usize) as *const AtomicU32,
-            mask: *(ptr.add(p.sq_off.ring_mask as usize) as *const u32),
-            _flags: ptr.add(p.sq_off.flags as usize) as *const AtomicU32,
-            dropped: ptr.add(p.sq_off.dropped as usize) as *const AtomicU32,
-            array: ptr.add(p.sq_off.array as usize) as *mut u32,
-            sqes: ptr_sqes as *mut io_uring_sqe,
-            sqe_head: 0,
-            sqe_tail: 0,
-        }
-    }
-}
-
-pub struct CompletionQueue {
-    head: *const AtomicU32,
-    tail: *const AtomicU32,
-    mask: u32,
-    overflow: *const AtomicU32,
-    cqes: *mut io_uring_cqe,
-    _flags: *const AtomicU32,
-}
-
-impl CompletionQueue {
-    unsafe fn new(ptr: *mut ffi::c_void, p: &io_uring_params) -> Self {
-        Self {
-            head: ptr.add(p.cq_off.head as usize) as *const AtomicU32,
-            tail: ptr.add(p.cq_off.tail as usize) as *const AtomicU32,
-            mask: *(ptr.add(p.cq_off.ring_mask as usize) as *const u32),
-            overflow: ptr.add(p.cq_off.overflow as usize) as *const AtomicU32,
-            cqes: ptr.add(p.cq_off.cqes as usize) as *mut io_uring_cqe,
-            _flags: ptr.add(p.cq_off.flags as usize) as *const AtomicU32,
-        }
-    }
-}
-
 struct RwMmap {
-    ptr: *mut ffi::c_void,
+    ptr: *mut c_void,
     len: usize,
 }
 
@@ -330,6 +310,18 @@ impl Drop for RwMmap {
             // If we fail while unmapping memory I don't know what to do.
             mm::munmap(self.ptr, self.len).expect("munmap failed")
         }
+    }
+}
+
+impl RwMmap {
+    // All our pointer accesses are by u32s
+    unsafe fn ptr_at<T>(&self, byte_offset: u32) -> *const T {
+        (self.ptr as *const u8).add(byte_offset) as *const T
+    }
+
+    unsafe fn slice_at<T>(&self, byte_offset: usize, count: u32) -> &[T] {
+        let ptr = self.ptr_at::<T>(byte_offset);
+        &*core::ptr::slice_from_raw_parts(ptr, count)
     }
 }
 

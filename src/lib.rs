@@ -27,6 +27,8 @@ pub struct IoUring {
     pub features: IoringFeatureFlags,
     pub sq_off: io_sqring_offsets,
     pub cq_off: io_cqring_offsets,
+    sqe_head: u32,
+    sqe_tail: u32,
 }
 
 impl IoUring {
@@ -108,14 +110,14 @@ impl IoUring {
                 + p.cq_entries * mem::size_of::<io_uring_cqe>() as u32,
         ) as usize;
 
-        let mmap_sq = RwMmap::new(
+        let mmap_rings = RwMmap::new(
             size,
             fd.as_fd(),
             mm::MapFlags::SHARED | mm::MapFlags::POPULATE,
             IORING_OFF_SQ_RING,
         )
         .map_err(InitErr::UnexpectedErrno)?;
-        assert_eq!(mmap_sq.len, size);
+        assert_eq!(mmap_rings.len, size);
 
         // TODO: wtf does this mean
         // "The motivation for the `sqes` and `array` indirection is to make it
@@ -134,127 +136,90 @@ impl IoUring {
         .map_err(InitErr::UnexpectedErrno)?;
         assert_eq!(mmap_sq_entries.len, size_sqes);
 
+        // We expect the kernel copies p.sq_entries to the u32 pointed to by
+        // p.sq_off.ring_entries, see https://github.com/torvalds/linux/blob/v5.8/fs/io_uring.c#L7843-L7844.
+        unsafe {
+            assert_eq!(p.sq_entries, *mmap_rings.ptr_at(p.sq_off.ring_entries))
+        };
+
         // Check that our starting state is as we expect.
         // TODO: make these little private functions if they are used more than
         // once
         unsafe {
-            assert_eq!(*mmap_sq.ptr_at::<u32>(p.sq_off.head), 0);
-            assert_eq!(*mmap_sq.ptr_at::<u32>(p.sq_off.tail), 0);
+            assert_eq!(*mmap_rings.ptr_at::<u32>(p.sq_off.head), 0);
+            assert_eq!(*mmap_rings.ptr_at::<u32>(p.sq_off.tail), 0);
             assert_eq!(
-                *mmap_sq.ptr_at::<u32>(p.sq_off.ring_mask),
+                *mmap_rings.ptr_at::<u32>(p.sq_off.ring_mask),
                 p.sq_entries - 1,
             );
             // Allow p.sq_off.flags to be non-zero, since the kernel may set
             // IORING_SQ_NEED_WAKEUP at any time.
-            assert_eq!(*mmap_sq.ptr_at::<u32>(p.sq_off.dropped), 0);
+            assert_eq!(*mmap_rings.ptr_at::<u32>(p.sq_off.dropped), 0);
         }
         unsafe {
-            assert_eq!(*mmap_sq.ptr_at::<u32>(p.cq_off.head), 0);
-            assert_eq!(*mmap_sq.ptr_at::<u32>(p.cq_off.tail), 0);
+            assert_eq!(*mmap_rings.ptr_at::<u32>(p.cq_off.head), 0);
+            assert_eq!(*mmap_rings.ptr_at::<u32>(p.cq_off.tail), 0);
             assert_eq!(
-                *mmap_sq.ptr_at::<u32>(p.cq_off.ring_mask),
+                *mmap_rings.ptr_at::<u32>(p.cq_off.ring_mask),
                 p.cq_entries - 1
             );
-            assert_eq!(*mmap_sq.ptr_at::<u32>(p.cq_off.overflow), 0);
+            assert_eq!(*mmap_rings.ptr_at::<u32>(p.cq_off.overflow), 0);
         }
 
         Ok(Self {
             fd,
-            mmap_rings: mmap_sq,
+            mmap_rings,
             mmap_sq_entries,
             flags: p.flags,
             features: p.features,
             sq_off: p.sq_off,
             cq_off: p.cq_off,
+            sqe_head: 0,
+            sqe_tail: 0,
         })
     }
 
-    /*
-        pub fn get_sqe(&mut self) -> Option<&mut io_uring_sqe> {
-            let head = unsafe { (*self.mmap_rings.head).load(Ordering::Acquire) };
-            let next = self.mmap_rings.sqe_tail.wrapping_add(1);
-            if next.wrapping_sub(head) > self.mmap_rings.mask + 1 {
-                return None;
-            }
-            let sqe = unsafe {
-                let s = &mut *self.mmap_rings.sqes.add(
-                    (self.mmap_rings.sqe_tail & self.mmap_rings.mask) as usize,
-                );
-                ptr::write_bytes(s, 0, 1);
-                s
-            };
-            self.mmap_rings.sqe_tail = next;
-            Some(sqe)
+    unsafe fn shared_sqe_head(&mut self) -> u32 {
+        AtomicU32::from_ptr(self.mmap_rings.mut_ptr_at(self.sq_off.head))
+            .load(Ordering::Acquire)
+    }
+
+    /// Returns a reference to a vacant SQE, or an error if the submission
+    /// queue is full. We follow the implementation (and atomics) of
+    /// liburing's `io_uring_get_sqe()` exactly.
+    /// TODO: is it reasonable/possible to make this "safe" and return a
+    /// reference?
+    unsafe fn get_sqe(&mut self) -> Result<*mut io_uring_sqe, GetSqeErr> {
+        let head = unsafe { self.shared_sqe_head() };
+
+        // Remember that these head and tail offsets wrap around every four
+        // billion operations. We must therefore use wrapping addition
+        // and subtraction to avoid a runtime crash.
+        let next = self.sqe_head.wrapping_add(1);
+        if next.wrapping_sub(head) > self.sq_off.ring_entries {
+            return Err(GetSqeErr::SubmissionQueueFull);
         }
 
-        pub fn submit(&mut self) -> io::Result<u32> {
-            self.submit_and_wait(0)
-        }
+        let sq_mask: u32 =
+            unsafe { *self.mmap_rings.ptr_at(self.sq_off.ring_mask) };
 
-        pub fn submit_and_wait(&mut self, wait_nr: u32) -> io::Result<u32> {
-            let sq = &mut self.mmap_rings;
-            let to_submit = sq.sqe_tail.wrapping_sub(sq.sqe_head);
-            if to_submit > 0 {
-                let mut tail = unsafe { (*sq.tail).load(Ordering::Acquire) };
-                while sq.sqe_head != sq.sqe_tail {
-                    unsafe {
-                        *sq.array.add((tail & sq.mask) as usize) =
-                            sq.sqe_head & sq.mask;
-                    }
-                    sq.sqe_head = sq.sqe_head.wrapping_add(1);
-                    tail = tail.wrapping_add(1);
-                }
-                unsafe {
-                    (*sq.tail).store(tail, Ordering::Release);
-                }
-            }
+        let sqe =
+            unsafe { self.mmap_sq_entries.mut_ptr_at(self.sqe_tail & sq_mask) };
 
-            let mut flags = IoringEnterFlags::empty();
-            if wait_nr > 0 {
-                flags |= IoringEnterFlags::GETEVENTS;
-            }
+        self.sqe_tail = next;
+        Ok(sqe)
+    }
 
-            unsafe { io_uring_enter(self.fd.as_fd(), to_submit, wait_nr, flags) }
-        }
-
-        pub fn peek_cqe(&self) -> Option<&io_uring_cqe> {
-            let cq = &self.cq;
-            let head = unsafe { (*cq.head).load(Ordering::Acquire) };
-            if head == unsafe { (*cq.tail).load(Ordering::Acquire) } {
-                return None;
-            }
-            Some(unsafe { &*cq.cqes.add((head & cq.mask) as usize) })
-        }
-
-        pub fn cq_advance(&self, nr: u32) {
-            let cq = &self.cq;
-            unsafe {
-                let head = (*cq.head).load(Ordering::Relaxed);
-                (*cq.head).store(head.wrapping_add(nr), Ordering::Release);
-            }
-        }
-
-        pub fn copy_cqes(
-            &mut self,
-            cqes: &mut [io_uring_cqe],
-            wait_nr: u32,
-        ) -> io::Result<u32> {
-            let mut count: u32 = 0;
-            while (count as usize) < cqes.len() {
-                if let Some(cqe) = self.peek_cqe() {
-                    cqes[count as usize] = unsafe { ptr::read(cqe as *const _) };
-                    count += 1;
-                    self.cq_advance(1);
-                } else {
-                    if count >= wait_nr {
-                        break;
-                    }
-                    self.submit_and_wait(wait_nr - count)?;
-                }
-            }
-            Ok(count)
-        }
-    */
+    /// Returns the number of flushed and unflushed SQEs pending in the
+    /// submission queue. In other words, this is the number of SQEs in the
+    /// submission queue, i.e. its length. These are SQEs that the kernel is
+    /// yet to consume. Matches the implementation of io_uring_sq_ready in
+    /// liburing.
+    pub unsafe fn sq_ready(&mut self) -> u32 {
+        // Always use the shared ring state (i.e. not self.sqe_head) to
+        // avoid going out of sync, see https://github.com/axboe/liburing/issues/92.
+        self.sqe_tail.wrapping_sub(self.shared_sqe_head())
+    }
 }
 
 #[derive(Debug)]
@@ -269,6 +234,10 @@ pub enum InitErr {
     PermissionDenied,
     SystemOutdated,
     UnexpectedErrno(io::Errno),
+}
+
+pub enum GetSqeErr {
+    SubmissionQueueFull,
 }
 
 struct RwMmap {
@@ -307,15 +276,19 @@ impl Drop for RwMmap {
     }
 }
 
+// All our pointer accesses are by u32s..
 impl RwMmap {
-    // All our pointer accesses are by u32s
     unsafe fn ptr_at<T>(&self, byte_offset: u32) -> *const T {
         (self.ptr as *const u8).add(byte_offset as usize) as *const T
     }
 
-    unsafe fn slice_at<T>(&self, byte_offset: u32, count: usize) -> &[T] {
+    unsafe fn mut_ptr_at<T>(&mut self, byte_offset: u32) -> *mut T {
+        (self.ptr as *mut u8).add(byte_offset as usize) as *mut T
+    }
+
+    unsafe fn slice_at<T>(&self, byte_offset: u32, count: u32) -> &[T] {
         let ptr = self.ptr_at::<T>(byte_offset);
-        &*core::ptr::slice_from_raw_parts(ptr, count)
+        &*core::ptr::slice_from_raw_parts(ptr, count as usize)
     }
 }
 
@@ -328,24 +301,4 @@ mod tests {
         let _uring =
             IoUring::new(8, IoringSetupFlags::empty()).expect("setup failed");
     }
-
-    /*
-    #[test]
-    fn test_nop() {
-        let mut uring =
-            IoUring::new(8, IoringSetupFlags::empty()).expect("setup failed");
-
-        let sqe = uring.get_sqe().expect("get sqe failed");
-        sqe.opcode = IoringOp::Nop;
-        sqe.user_data = 0x42.into();
-
-        uring.submit_and_wait(1).expect("submit failed");
-
-        let mut cqes = [io_uring_cqe::default()];
-        let count = uring.copy_cqes(&mut cqes, 1).expect("copy cqes failed");
-
-        assert_eq!(count, 1);
-        assert_eq!(cqes[0].user_data, 0x42.into());
-    }
-    */
 }

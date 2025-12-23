@@ -180,8 +180,8 @@ impl IoUring {
     }
 
     unsafe fn shared_sqe_head(&mut self) -> u32 {
-        AtomicU32::from_ptr(self.mmap_rings.mut_ptr_at(self.sq_off.head))
-            .load(Ordering::Acquire)
+        let ptr = self.mmap_rings.mut_ptr_at(self.sq_off.head);
+        AtomicU32::from_ptr(ptr).load(Ordering::Acquire)
     }
 
     /// Returns a reference to a vacant SQE, or an error if the submission

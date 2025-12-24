@@ -23,7 +23,7 @@ use rustix::mm;
 pub struct IoUring {
     pub fd: OwnedFd,
     // A single mmap call that contains both the sq and cq
-    mmap_rings: RwMmap,
+    mmap: RwMmap,
     pub flags: IoringSetupFlags,
     pub features: IoringFeatureFlags,
     pub cq_off: io_cqring_offsets,
@@ -123,25 +123,9 @@ impl IoUring {
         // TODO: usless assert?
         assert_eq!(mmap_rings.len, size);
 
-        // TODO: wtf does this mean
-        // "The motivation for the `sqes` and `array` indirection is to make it
-        // possible for the
-        // application to preallocate static linux.io_uring_sqe entries and
-        // then replay them when needed."
-        let size_sqes =
-            (p.sq_entries * mem::size_of::<io_uring_sqe>() as u32) as usize;
-
-        let mmap_sq_entries = RwMmap::new(
-            size_sqes.try_into().unwrap(),
-            fd.as_fd(),
-            mm::MapFlags::SHARED | mm::MapFlags::POPULATE,
-            IORING_OFF_SQES,
-        )
-        .map_err(UnexpectedErrno)?;
-        // TODO: usless assert?
-        assert_eq!(mmap_sq_entries.len, size_sqes);
-
-        let sq_mask: u32 = unsafe { *mmap_rings.ptr_at(p.cq_off.ring_mask) };
+        let sq_mask: u32 = unsafe { *mmap_rings.ptr_at(p.sq_off.ring_mask) };
+        let sq = SubmissionQueue::new(p, fd.as_fd(), sq_mask)
+            .map_err(UnexpectedErrno)?;
 
         // We expect the kernel copies p.sq_entries to the u32 pointed to by
         // p.sq_off.ring_entries, see https://github.com/torvalds/linux/blob/v5.8/fs/io_uring.c#L7843-L7844.
@@ -175,38 +159,16 @@ impl IoUring {
 
         Ok(Self {
             fd,
-            mmap_rings,
+            mmap: mmap_rings,
             flags: p.flags,
             features: p.features,
             cq_off: p.cq_off,
-            sq: SubmissionQueue {
-                entries: p.sq_entries,
-                off: p.sq_off,
-                mmap_entries: mmap_sq_entries,
-                head: 0,
-                tail: 0,
-                mask: sq_mask,
-            },
+            sq,
         })
     }
 
-    // TODO: move to SubmissionQueue
-    unsafe fn sq_head_shared(&mut self) -> u32 {
-        self.mmap_rings.atomic_u32_at(self.sq.head).load(Ordering::Acquire)
-    }
-
     unsafe fn cq_head_shared(&mut self) -> u32 {
-        self.mmap_rings.atomic_u32_at(self.cq_off.head).load(Ordering::Acquire)
-    }
-
-    // TODO: move to SubmissionQueue
-    unsafe fn shared_sq_flags(&mut self) -> IoringSqFlags {
-        let atomic_u32 = self
-            .mmap_rings
-            .atomic_u32_at(self.sq.off.flags)
-            .load(Ordering::Relaxed);
-
-        IoringSqFlags::from_bits_retain(atomic_u32)
+        self.mmap.atomic_u32_at(self.cq_off.head).load(Ordering::Acquire)
     }
 
     /// Returns a reference to a vacant SQE, or an error if the submission
@@ -215,7 +177,7 @@ impl IoUring {
     /// TODO: is it reasonable/possible to make this "safe" and return a
     /// reference?
     pub unsafe fn get_sqe(&mut self) -> Result<*mut io_uring_sqe, err::GetSqe> {
-        let head = self.sq_head_shared();
+        let head = self.sq.head_shared(&mut self.mmap);
 
         // Remember that these head and tail offsets wrap around every four
         // billion operations. We must therefore use wrapping addition
@@ -301,11 +263,11 @@ impl IoUring {
             // Fill in SQEs that we have queued up, adding them to the kernel
             // ring.
             let to_submit = self.sq.tail.wrapping_sub(self.sq.head);
-            let tail = self.mmap_rings.mut_ptr_at::<u32>(self.sq.off.tail);
+            let tail = self.mmap.mut_ptr_at::<u32>(self.sq.off.tail);
 
             for _ in 0..to_submit {
                 let sqe: *mut u32 = self
-                    .mmap_rings
+                    .mmap
                     .mut_ptr_at(self.sq.off.array + (*tail & self.sq.mask));
 
                 *tail = *tail.wrapping_add(1);
@@ -314,7 +276,7 @@ impl IoUring {
 
             // Ensure that the kernel can actually see the SQE updates when it
             // sees the tail update.
-            self.mmap_rings
+            self.mmap
                 .atomic_u32_at(self.sq.off.tail)
                 .store(*tail, Ordering::Release);
         }
@@ -336,7 +298,9 @@ impl IoUring {
             return true;
         }
 
-        if self.shared_sq_flags().contains(IoringSqFlags::NEED_WAKEUP) {
+        let sq_flags = self.sq.flags_shared(&mut self.mmap);
+
+        if sq_flags.contains(IoringSqFlags::NEED_WAKEUP) {
             flags.set(IoringEnterFlags::SQ_WAKEUP, true);
             return true;
         }
@@ -351,17 +315,15 @@ impl IoUring {
     pub unsafe fn sq_ready(&mut self) -> u32 {
         // Always use the shared ring state (i.e. not self.sqe_head) to
         // avoid going out of sync, see https://github.com/axboe/liburing/issues/92.
-        self.sq.tail.wrapping_sub(self.sq_head_shared())
+        self.sq.tail.wrapping_sub(self.sq.head_shared(&mut self.mmap))
     }
 
     /// Returns the number of CQEs in the completion queue, i.e. its length.
     /// These are CQEs that the application is yet to consume.
     /// Matches the implementation of io_uring_cq_ready in liburing.
     pub unsafe fn cq_ready(&mut self) -> u32 {
-        let cq_tail_shared = self
-            .mmap_rings
-            .atomic_u32_at(self.cq_off.tail)
-            .load(Ordering::Acquire);
+        let cq_tail_shared =
+            self.mmap.atomic_u32_at(self.cq_off.tail).load(Ordering::Acquire);
 
         cq_tail_shared.wrapping_sub(self.cq_head_shared())
     }
@@ -375,6 +337,56 @@ struct SubmissionQueue {
     head: u32,
     tail: u32,
     mask: u32,
+}
+
+impl SubmissionQueue {
+    fn new(
+        p: &io_uring_params,
+        fd: BorrowedFd<'_>,
+        mask: u32,
+    ) -> io::Result<Self> {
+        // TODO: wtf does this mean
+        // "The motivation for the `sqes` and `array` indirection is to make it
+        // possible for the
+        // application to preallocate static linux.io_uring_sqe entries and
+        // then replay them when needed."
+        let size_sqes =
+            (p.sq_entries * mem::size_of::<io_uring_sqe>() as u32) as usize;
+
+        let mmap_entries = RwMmap::new(
+            size_sqes.try_into().unwrap(),
+            fd,
+            mm::MapFlags::SHARED | mm::MapFlags::POPULATE,
+            IORING_OFF_SQES,
+        )?;
+        // TODO: usless assert?
+        assert_eq!(mmap_entries.len, size_sqes);
+
+        let sq = Self {
+            entries: p.sq_entries,
+            off: p.sq_off,
+            mmap_entries,
+            head: 0,
+            tail: 0,
+            mask,
+        };
+
+        Ok(sq)
+    }
+
+    unsafe fn head_shared(&mut self, mmap_rings: &mut RwMmap) -> u32 {
+        mmap_rings.atomic_u32_at(self.head).load(Ordering::Acquire)
+    }
+
+    unsafe fn flags_shared(
+        &mut self,
+        mmap_rings: &mut RwMmap,
+    ) -> IoringSqFlags {
+        let atomic_u32 =
+            mmap_rings.atomic_u32_at(self.off.flags).load(Ordering::Relaxed);
+
+        IoringSqFlags::from_bits_retain(atomic_u32)
+    }
 }
 
 struct RwMmap {

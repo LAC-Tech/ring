@@ -31,6 +31,7 @@ pub struct IoUring {
     pub cq_off: io_cqring_offsets,
     sqe_head: u32,
     sqe_tail: u32,
+    sq_mask: u32,
 }
 
 impl IoUring {
@@ -138,6 +139,8 @@ impl IoUring {
         .map_err(InitErr::UnexpectedErrno)?;
         assert_eq!(mmap_sq_entries.len, size_sqes);
 
+        let sq_mask: u32 = unsafe { *mmap_rings.ptr_at(p.cq_off.ring_mask) };
+
         // We expect the kernel copies p.sq_entries to the u32 pointed to by
         // p.sq_off.ring_entries, see https://github.com/torvalds/linux/blob/v5.8/fs/io_uring.c#L7843-L7844.
         unsafe {
@@ -178,12 +181,12 @@ impl IoUring {
             cq_off: p.cq_off,
             sqe_head: 0,
             sqe_tail: 0,
+            sq_mask,
         })
     }
 
-    unsafe fn shared_sqe_head(&mut self) -> u32 {
-        let ptr = self.mmap_rings.mut_ptr_at(self.sq_off.head);
-        AtomicU32::from_ptr(ptr).load(Ordering::Acquire)
+    unsafe fn shared_sq_head(&mut self) -> u32 {
+        self.mmap_rings.atomic_u32_at(self.sq_off.head).load(Ordering::Acquire)
     }
 
     /// Returns a reference to a vacant SQE, or an error if the submission
@@ -191,8 +194,8 @@ impl IoUring {
     /// liburing's `io_uring_get_sqe()` exactly.
     /// TODO: is it reasonable/possible to make this "safe" and return a
     /// reference?
-    unsafe fn get_sqe(&mut self) -> Result<*mut io_uring_sqe, GetSqeErr> {
-        let head = unsafe { self.shared_sqe_head() };
+    pub unsafe fn get_sqe(&mut self) -> Result<*mut io_uring_sqe, GetSqeErr> {
+        let head = unsafe { self.shared_sq_head() };
 
         // Remember that these head and tail offsets wrap around every four
         // billion operations. We must therefore use wrapping addition
@@ -202,11 +205,7 @@ impl IoUring {
             return Err(GetSqeErr::SubmissionQueueFull);
         }
 
-        let sq_mask: u32 =
-            unsafe { *self.mmap_rings.ptr_at(self.sq_off.ring_mask) };
-
-        let sqe =
-            unsafe { self.mmap_sq_entries.mut_ptr_at(self.sqe_tail & sq_mask) };
+        let sqe = self.mmap_sq_entries.mut_ptr_at(self.sqe_tail & self.sq_mask);
 
         self.sqe_tail = next;
         Ok(sqe)
@@ -220,7 +219,39 @@ impl IoUring {
     pub unsafe fn sq_ready(&mut self) -> u32 {
         // Always use the shared ring state (i.e. not self.sqe_head) to
         // avoid going out of sync, see https://github.com/axboe/liburing/issues/92.
-        self.sqe_tail.wrapping_sub(self.shared_sqe_head())
+        self.sqe_tail.wrapping_sub(self.shared_sq_head())
+    }
+
+    /// Sync internal state with kernel ring state on the SQ side.
+    /// Returns the number of all pending events in the SQ ring, for the shared
+    /// ring. This return value includes previously flushed SQEs, as per
+    /// liburing. The rationale is to suggest that an io_uring_enter() call
+    /// is needed rather than not. Matches the implementation of
+    /// __io_uring_flush_sq() in liburing.
+    pub unsafe fn flush_sq(&mut self) -> u32 {
+        if self.sqe_head != self.sqe_tail {
+            // Fill in SQEs that we have queued up, adding them to the kernel
+            // ring.
+            let to_submit = self.sqe_tail.wrapping_sub(self.sqe_head);
+            let tail = self.mmap_rings.mut_ptr_at::<u32>(self.sq_off.tail);
+
+            for _ in 0..to_submit {
+                let sqe: *mut u32 = self
+                    .mmap_rings
+                    .mut_ptr_at(self.sq_off.array + (*tail & self.sq_mask));
+
+                *tail = *tail.wrapping_add(1);
+                *sqe = self.sqe_head & self.sq_mask;
+            }
+
+            // Ensure that the kernel can actually see the SQE updates when it
+            // sees the tail update.
+            self.mmap_rings
+                .atomic_u32_at(self.sq_off.tail)
+                .store(*tail, Ordering::Release);
+        }
+
+        self.sq_ready()
     }
 }
 
@@ -288,9 +319,8 @@ impl RwMmap {
         (self.ptr as *mut u8).add(byte_offset as usize) as *mut T
     }
 
-    unsafe fn slice_at<T>(&self, byte_offset: u32, count: u32) -> &[T] {
-        let ptr = self.ptr_at::<T>(byte_offset);
-        &*core::ptr::slice_from_raw_parts(ptr, count as usize)
+    unsafe fn atomic_u32_at(&mut self, byte_offset: u32) -> &AtomicU32 {
+        AtomicU32::from_ptr(self.mut_ptr_at(byte_offset))
     }
 }
 

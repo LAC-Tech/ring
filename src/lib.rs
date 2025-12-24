@@ -123,10 +123,6 @@ impl IoUring {
         // TODO: usless assert?
         assert_eq!(mmap_rings.len, size);
 
-        let sq_mask: u32 = unsafe { *mmap_rings.ptr_at(p.sq_off.ring_mask) };
-        let sq = SubmissionQueue::new(p, fd.as_fd(), sq_mask)
-            .map_err(UnexpectedErrno)?;
-
         // We expect the kernel copies p.sq_entries to the u32 pointed to by
         // p.sq_off.ring_entries, see https://github.com/torvalds/linux/blob/v5.8/fs/io_uring.c#L7843-L7844.
         unsafe {
@@ -134,19 +130,19 @@ impl IoUring {
         };
 
         // Check that our starting state is as we expect.
-        // TODO: make these little private functions if they are used more than
-        // once
+        let sq_mask: u32 = unsafe { *mmap_rings.ptr_at(p.sq_off.ring_mask) };
         unsafe {
             assert_eq!(*mmap_rings.ptr_at::<u32>(p.sq_off.head), 0);
             assert_eq!(*mmap_rings.ptr_at::<u32>(p.sq_off.tail), 0);
-            assert_eq!(
-                *mmap_rings.ptr_at::<u32>(p.sq_off.ring_mask),
-                p.sq_entries - 1,
-            );
+            assert_eq!(sq_mask, p.sq_entries - 1,);
             // Allow p.sq_off.flags to be non-zero, since the kernel may set
             // IORING_SQ_NEED_WAKEUP at any time.
             assert_eq!(*mmap_rings.ptr_at::<u32>(p.sq_off.dropped), 0);
         }
+
+        let sq = SubmissionQueue::new(p, fd.as_fd(), sq_mask)
+            .map_err(UnexpectedErrno)?;
+
         unsafe {
             assert_eq!(*mmap_rings.ptr_at::<u32>(p.cq_off.head), 0);
             assert_eq!(*mmap_rings.ptr_at::<u32>(p.cq_off.tail), 0);

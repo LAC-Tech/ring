@@ -30,6 +30,7 @@ pub struct IoUring {
     pub features: IoringFeatureFlags,
     pub sq_off: io_sqring_offsets,
     pub cq_off: io_cqring_offsets,
+    sq_entries: u32,
     sqe_head: u32,
     sqe_tail: u32,
     sq_mask: u32,
@@ -186,6 +187,7 @@ impl IoUring {
             features: p.features,
             sq_off: p.sq_off,
             cq_off: p.cq_off,
+            sq_entries: p.sq_entries,
             sqe_head: 0,
             sqe_tail: 0,
             sq_mask,
@@ -221,7 +223,7 @@ impl IoUring {
         // billion operations. We must therefore use wrapping addition
         // and subtraction to avoid a runtime crash.
         let next = self.sqe_head.wrapping_add(1);
-        if next.wrapping_sub(head) > self.sq_off.ring_entries {
+        if next.wrapping_sub(head) > self.sq_entries {
             return Err(err::GetSqe::SubmissionQueueFull);
         }
 

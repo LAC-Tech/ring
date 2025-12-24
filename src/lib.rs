@@ -14,7 +14,6 @@ use rustix::io;
 use rustix::io_uring::{
     io_cqring_offsets, io_sqring_offsets, io_uring_cqe, io_uring_params,
     io_uring_setup, io_uring_sqe, IoringEnterFlags, IoringFeatureFlags,
-    IoringSetupFlags, IoringSqFlags, IORING_OFF_SQES, IORING_OFF_SQ_RING,
 };
 
 use rustix::mm;
@@ -220,6 +219,45 @@ impl IoUring {
         Ok(sqe)
     }
 
+    /// Like submit(), but allows waiting for events as well.
+    /// Returns the number of SQEs submitted.
+    /// Matches the implementation of io_uring_submit_and_wait() in liburing.
+    pub unsafe fn submit_and_wait(&mut self, wait_nr: u32) -> u32 {
+        let submitted = self.flush_sq();
+        let mut flags = IoringEnterFlags::empty();
+
+        if self.sq_ring_needs_enter(&mut flags) || wait_nr > 0 {
+            if wait_nr > 0 || self.flags.contains(IoringSetupFlags::IOPOLL) {
+                flags.set(IoringEnterFlags::GETEVENTS, true);
+            }
+            self.enter
+        }
+
+        submitted
+
+        /*
+        if (self.sq_ring_needs_enter(&flags) or wait_nr > 0) {
+            if (wait_nr > 0 or (self.flags & linux.IORING_SETUP_IOPOLL) != 0) {
+                flags |= linux.IORING_ENTER_GETEVENTS;
+            }
+            return try self.enter(submitted, wait_nr, flags);
+        }
+        return submitted;
+        */
+    }
+
+    /// Tell the kernel we have submitted SQEs and/or want to wait for CQEs.
+    /// Returns the number of SQEs submitted.
+    pub fn enter(
+        &mut self,
+        to_submit: u32,
+        min_complete: u32,
+        flags: u32,
+    ) -> u32 {
+
+        let res = io_uring_ent
+    }
+
     /// Returns the number of flushed and unflushed SQEs pending in the
     /// submission queue. In other words, this is the number of SQEs in the
     /// submission queue, i.e. its length. These are SQEs that the kernel is
@@ -282,7 +320,7 @@ impl IoUring {
             flags.set(IoringEnterFlags::SQ_WAKEUP, true);
             return true;
         }
-        return false;
+        false
     }
 }
 

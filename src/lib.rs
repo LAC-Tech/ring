@@ -24,16 +24,10 @@ pub struct IoUring {
     pub fd: OwnedFd,
     // A single mmap call that contains both the sq and cq
     mmap_rings: RwMmap,
-    // Contains the array with the actual sq entries
-    mmap_sq_entries: RwMmap,
     pub flags: IoringSetupFlags,
     pub features: IoringFeatureFlags,
-    pub sq_off: io_sqring_offsets,
     pub cq_off: io_cqring_offsets,
-    sq_entries: u32,
-    sqe_head: u32,
-    sqe_tail: u32,
-    sq_mask: u32,
+    sq: SubmissionQueue,
 }
 
 impl IoUring {
@@ -182,30 +176,34 @@ impl IoUring {
         Ok(Self {
             fd,
             mmap_rings,
-            mmap_sq_entries,
             flags: p.flags,
             features: p.features,
-            sq_off: p.sq_off,
             cq_off: p.cq_off,
-            sq_entries: p.sq_entries,
-            sqe_head: 0,
-            sqe_tail: 0,
-            sq_mask,
+            sq: SubmissionQueue {
+                entries: p.sq_entries,
+                off: p.sq_off,
+                mmap_entries: mmap_sq_entries,
+                head: 0,
+                tail: 0,
+                mask: sq_mask,
+            },
         })
     }
 
+    // TODO: move to SubmissionQueue
     unsafe fn sq_head_shared(&mut self) -> u32 {
-        self.mmap_rings.atomic_u32_at(self.sq_off.head).load(Ordering::Acquire)
+        self.mmap_rings.atomic_u32_at(self.sq.head).load(Ordering::Acquire)
     }
 
     unsafe fn cq_head_shared(&mut self) -> u32 {
         self.mmap_rings.atomic_u32_at(self.cq_off.head).load(Ordering::Acquire)
     }
 
+    // TODO: move to SubmissionQueue
     unsafe fn shared_sq_flags(&mut self) -> IoringSqFlags {
         let atomic_u32 = self
             .mmap_rings
-            .atomic_u32_at(self.sq_off.flags)
+            .atomic_u32_at(self.sq.off.flags)
             .load(Ordering::Relaxed);
 
         IoringSqFlags::from_bits_retain(atomic_u32)
@@ -222,14 +220,14 @@ impl IoUring {
         // Remember that these head and tail offsets wrap around every four
         // billion operations. We must therefore use wrapping addition
         // and subtraction to avoid a runtime crash.
-        let next = self.sqe_head.wrapping_add(1);
-        if next.wrapping_sub(head) > self.sq_entries {
+        let next = self.sq.head.wrapping_add(1);
+        if next.wrapping_sub(head) > self.sq.entries {
             return Err(err::GetSqe::SubmissionQueueFull);
         }
 
-        let sqe = self.mmap_sq_entries.mut_ptr_at(self.sqe_tail & self.sq_mask);
+        let sqe = self.sq.mmap_entries.mut_ptr_at(self.sq.tail & self.sq.mask);
 
-        self.sqe_tail = next;
+        self.sq.tail = next;
         Ok(sqe)
     }
 
@@ -299,25 +297,25 @@ impl IoUring {
     /// is needed rather than not. Matches the implementation of
     /// __io_uring_flush_sq() in liburing.
     pub unsafe fn flush_sq(&mut self) -> u32 {
-        if self.sqe_head != self.sqe_tail {
+        if self.sq.head != self.sq.tail {
             // Fill in SQEs that we have queued up, adding them to the kernel
             // ring.
-            let to_submit = self.sqe_tail.wrapping_sub(self.sqe_head);
-            let tail = self.mmap_rings.mut_ptr_at::<u32>(self.sq_off.tail);
+            let to_submit = self.sq.tail.wrapping_sub(self.sq.head);
+            let tail = self.mmap_rings.mut_ptr_at::<u32>(self.sq.off.tail);
 
             for _ in 0..to_submit {
                 let sqe: *mut u32 = self
                     .mmap_rings
-                    .mut_ptr_at(self.sq_off.array + (*tail & self.sq_mask));
+                    .mut_ptr_at(self.sq.off.array + (*tail & self.sq.mask));
 
                 *tail = *tail.wrapping_add(1);
-                *sqe = self.sqe_head & self.sq_mask;
+                *sqe = self.sq.head & self.sq.mask;
             }
 
             // Ensure that the kernel can actually see the SQE updates when it
             // sees the tail update.
             self.mmap_rings
-                .atomic_u32_at(self.sq_off.tail)
+                .atomic_u32_at(self.sq.off.tail)
                 .store(*tail, Ordering::Release);
         }
 
@@ -353,7 +351,7 @@ impl IoUring {
     pub unsafe fn sq_ready(&mut self) -> u32 {
         // Always use the shared ring state (i.e. not self.sqe_head) to
         // avoid going out of sync, see https://github.com/axboe/liburing/issues/92.
-        self.sqe_tail.wrapping_sub(self.sq_head_shared())
+        self.sq.tail.wrapping_sub(self.sq_head_shared())
     }
 
     /// Returns the number of CQEs in the completion queue, i.e. its length.
@@ -367,6 +365,16 @@ impl IoUring {
 
         cq_tail_shared.wrapping_sub(self.cq_head_shared())
     }
+}
+
+struct SubmissionQueue {
+    // Contains the array with the actual sq entries
+    mmap_entries: RwMmap,
+    off: io_sqring_offsets,
+    entries: u32,
+    head: u32,
+    tail: u32,
+    mask: u32,
 }
 
 struct RwMmap {

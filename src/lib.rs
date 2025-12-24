@@ -13,14 +13,14 @@ use rustix::fd::{AsFd, BorrowedFd, OwnedFd};
 use rustix::io;
 use rustix::io_uring::{
     io_cqring_offsets, io_sqring_offsets, io_uring_cqe, io_uring_params,
-    io_uring_setup, io_uring_sqe, IoringFeatureFlags, IoringSetupFlags,
-    IORING_OFF_SQES, IORING_OFF_SQ_RING,
+    io_uring_setup, io_uring_sqe, IoringEnterFlags, IoringFeatureFlags,
+    IoringSetupFlags, IoringSqFlags, IORING_OFF_SQES, IORING_OFF_SQ_RING,
 };
 
 use rustix::mm;
 
 pub struct IoUring {
-    fd: OwnedFd,
+    pub fd: OwnedFd,
     // A single mmap call that contains both the sq and cq
     mmap_rings: RwMmap,
     // Contains the array with the actual sq entries
@@ -189,6 +189,15 @@ impl IoUring {
         self.mmap_rings.atomic_u32_at(self.sq_off.head).load(Ordering::Acquire)
     }
 
+    unsafe fn shared_sq_flags(&mut self) -> IoringSqFlags {
+        let atomic_u32 = self
+            .mmap_rings
+            .atomic_u32_at(self.sq_off.flags)
+            .load(Ordering::Relaxed);
+
+        IoringSqFlags::from_bits_retain(atomic_u32)
+    }
+
     /// Returns a reference to a vacant SQE, or an error if the submission
     /// queue is full. We follow the implementation (and atomics) of
     /// liburing's `io_uring_get_sqe()` exactly.
@@ -253,6 +262,28 @@ impl IoUring {
 
         self.sq_ready()
     }
+
+    /// Returns true if we are not using an SQ thread (thus nobody submits but
+    /// us), or if IORING_SQ_NEED_WAKEUP is set and the SQ thread must be
+    /// explicitly awakened. For the latter case, we set the SQ thread
+    /// wakeup flag. Matches the implementation of sq_ring_needs_enter() in
+    /// liburing.
+    pub unsafe fn sq_ring_needs_enter(
+        &mut self,
+        flags: &mut IoringEnterFlags,
+    ) -> bool {
+        assert!(flags.is_empty());
+
+        if !self.flags.contains(IoringSetupFlags::SQPOLL) {
+            return true;
+        }
+
+        if self.shared_sq_flags().contains(IoringSqFlags::NEED_WAKEUP) {
+            flags.set(IoringEnterFlags::SQ_WAKEUP, true);
+            return true;
+        }
+        return false;
+    }
 }
 
 #[derive(Debug)]
@@ -285,15 +316,9 @@ impl RwMmap {
         flags: mm::MapFlags,
         offset: u64,
     ) -> rustix::io::Result<Self> {
+        let prot_flags = mm::ProtFlags::READ | mm::ProtFlags::WRITE;
         let ptr = unsafe {
-            mm::mmap(
-                ptr::null_mut(),
-                size,
-                mm::ProtFlags::READ | mm::ProtFlags::WRITE,
-                flags,
-                fd,
-                offset,
-            )?
+            mm::mmap(ptr::null_mut(), size, prot_flags, flags, fd, offset)?
         };
 
         Ok(Self { ptr, len: size })

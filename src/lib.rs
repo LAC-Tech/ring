@@ -6,6 +6,8 @@
 // I need to CONSTATLY cast things between usize and u32
 const _: () = assert!(usize::BITS >= 32);
 
+pub use rustix;
+
 use core::ffi::c_void;
 use core::sync::atomic::{AtomicU32, Ordering};
 use core::{assert, assert_eq, assert_ne, cmp, mem, ptr};

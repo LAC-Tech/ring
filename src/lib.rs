@@ -192,8 +192,12 @@ impl IoUring {
         })
     }
 
-    unsafe fn shared_sq_head(&mut self) -> u32 {
+    unsafe fn sq_head_shared(&mut self) -> u32 {
         self.mmap_rings.atomic_u32_at(self.sq_off.head).load(Ordering::Acquire)
+    }
+
+    unsafe fn cq_head_shared(&mut self) -> u32 {
+        self.mmap_rings.atomic_u32_at(self.cq_off.head).load(Ordering::Acquire)
     }
 
     unsafe fn shared_sq_flags(&mut self) -> IoringSqFlags {
@@ -210,15 +214,15 @@ impl IoUring {
     /// liburing's `io_uring_get_sqe()` exactly.
     /// TODO: is it reasonable/possible to make this "safe" and return a
     /// reference?
-    pub unsafe fn get_sqe(&mut self) -> Result<*mut io_uring_sqe, GetSqeErr> {
-        let head = unsafe { self.shared_sq_head() };
+    pub unsafe fn get_sqe(&mut self) -> Result<*mut io_uring_sqe, err::GetSqe> {
+        let head = self.sq_head_shared();
 
         // Remember that these head and tail offsets wrap around every four
         // billion operations. We must therefore use wrapping addition
         // and subtraction to avoid a runtime crash.
         let next = self.sqe_head.wrapping_add(1);
         if next.wrapping_sub(head) > self.sq_off.ring_entries {
-            return Err(GetSqeErr::SubmissionQueueFull);
+            return Err(err::GetSqe::SubmissionQueueFull);
         }
 
         let sqe = self.mmap_sq_entries.mut_ptr_at(self.sqe_tail & self.sq_mask);
@@ -347,12 +351,20 @@ impl IoUring {
     pub unsafe fn sq_ready(&mut self) -> u32 {
         // Always use the shared ring state (i.e. not self.sqe_head) to
         // avoid going out of sync, see https://github.com/axboe/liburing/issues/92.
-        self.sqe_tail.wrapping_sub(self.shared_sq_head())
+        self.sqe_tail.wrapping_sub(self.sq_head_shared())
     }
-}
 
-pub enum GetSqeErr {
-    SubmissionQueueFull,
+    /// Returns the number of CQEs in the completion queue, i.e. its length.
+    /// These are CQEs that the application is yet to consume.
+    /// Matches the implementation of io_uring_cq_ready in liburing.
+    pub unsafe fn cq_ready(&mut self) -> u32 {
+        let cq_tail_shared = self
+            .mmap_rings
+            .atomic_u32_at(self.cq_off.tail)
+            .load(Ordering::Acquire);
+
+        cq_tail_shared.wrapping_sub(self.cq_head_shared())
+    }
 }
 
 struct RwMmap {
@@ -401,7 +413,6 @@ impl RwMmap {
 }
 
 mod err {
-    #[derive(Debug)]
     pub enum Init {
         EntriesZero,
         EntriesNotPowerOfTwo,
@@ -458,6 +469,10 @@ mod err {
         /// with IORING_ENTER_GETEVENTS:
         SignalInterrupt,
         UnexpectedErrno(rustix::io::Errno),
+    }
+
+    pub enum GetSqe {
+        SubmissionQueueFull,
     }
 }
 

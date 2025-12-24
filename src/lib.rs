@@ -12,8 +12,10 @@ use core::{assert, assert_eq, assert_ne, cmp, mem, ptr};
 use rustix::fd::{AsFd, BorrowedFd, OwnedFd};
 use rustix::io;
 use rustix::io_uring::{
-    io_cqring_offsets, io_sqring_offsets, io_uring_cqe, io_uring_params,
-    io_uring_setup, io_uring_sqe, IoringEnterFlags, IoringFeatureFlags,
+    io_cqring_offsets, io_sqring_offsets, io_uring_cqe, io_uring_enter,
+    io_uring_params, io_uring_setup, io_uring_sqe, IoringEnterFlags,
+    IoringFeatureFlags, IoringSetupFlags, IoringSqFlags, IORING_OFF_SQES,
+    IORING_OFF_SQ_RING,
 };
 
 use rustix::mm;
@@ -39,7 +41,10 @@ impl IoUring {
     /// kernel will make the final call on how many entries the submission
     /// and completion queues will ultimately have, see https://github.com/torvalds/linux/blob/v5.8/fs/io_uring.c#L8027-L8050.
     /// Matches the interface of io_uring_queue_init() in liburing.
-    pub fn new(entries: u32, flags: IoringSetupFlags) -> Result<Self, InitErr> {
+    pub fn new(
+        entries: u32,
+        flags: IoringSetupFlags,
+    ) -> Result<Self, err::Init> {
         let mut params = io_uring_params::default();
         params.flags = flags;
         params.sq_thread_idle = 1000;
@@ -55,12 +60,13 @@ impl IoUring {
     pub fn new_with_params(
         entries: u32,
         p: &mut io_uring_params,
-    ) -> Result<Self, InitErr> {
+    ) -> Result<Self, err::Init> {
+        use err::Init::*;
         if entries == 0 {
-            return Err(InitErr::EntriesZero);
+            return Err(EntriesZero);
         }
         if !entries.is_power_of_two() {
-            return Err(InitErr::EntriesNotPowerOfTwo);
+            return Err(EntriesNotPowerOfTwo);
         }
 
         assert_eq!(p.sq_entries, 0);
@@ -75,14 +81,14 @@ impl IoUring {
 
         let res = unsafe { io_uring_setup(entries, p) };
         let fd = res.map_err(|errno| match errno {
-            Errno::FAULT => InitErr::ParamsOutsideAccessibleAddressSpace,
-            Errno::INVAL => InitErr::ArgumentsInvalid,
-            Errno::MFILE => InitErr::ProcessFdQuotaExceeded,
-            Errno::NFILE => InitErr::SystemFdQuotaExceeded,
-            Errno::NOMEM => InitErr::SystemResources,
-            Errno::PERM => InitErr::PermissionDenied,
-            Errno::NOSYS => InitErr::SystemOutdated,
-            _ => InitErr::UnexpectedErrno(errno),
+            Errno::FAULT => ParamsOutsideAccessibleAddressSpace,
+            Errno::INVAL => ArgumentsInvalid,
+            Errno::MFILE => ProcessFdQuotaExceeded,
+            Errno::NFILE => SystemFdQuotaExceeded,
+            Errno::NOMEM => SystemResources,
+            Errno::PERM => PermissionDenied,
+            Errno::NOSYS => SystemOutdated,
+            _ => UnexpectedErrno(errno),
         })?;
 
         // Kernel versions 5.4 and up use only one mmap() for the submission and
@@ -97,7 +103,7 @@ impl IoUring {
         // to keep the init/deinit mmap paths simple and because
         // io_uring has had many bug fixes even since 5.4.
         if !p.features.contains(IoringFeatureFlags::SINGLE_MMAP) {
-            return Err(InitErr::SystemOutdated);
+            return Err(SystemOutdated);
         }
 
         // Check that the kernel has actually set params and that "impossible is
@@ -118,7 +124,8 @@ impl IoUring {
             mm::MapFlags::SHARED | mm::MapFlags::POPULATE,
             IORING_OFF_SQ_RING,
         )
-        .map_err(InitErr::UnexpectedErrno)?;
+        .map_err(UnexpectedErrno)?;
+        // TODO: usless assert?
         assert_eq!(mmap_rings.len, size);
 
         // TODO: wtf does this mean
@@ -135,7 +142,8 @@ impl IoUring {
             mm::MapFlags::SHARED | mm::MapFlags::POPULATE,
             IORING_OFF_SQES,
         )
-        .map_err(InitErr::UnexpectedErrno)?;
+        .map_err(UnexpectedErrno)?;
+        // TODO: usless assert?
         assert_eq!(mmap_sq_entries.len, size_sqes);
 
         let sq_mask: u32 = unsafe { *mmap_rings.ptr_at(p.cq_off.ring_mask) };
@@ -219,10 +227,25 @@ impl IoUring {
         Ok(sqe)
     }
 
+    /// Submits the SQEs acquired via get_sqe() to the kernel. You can call this
+    /// once after you have called get_sqe() multiple times to setup
+    /// multiple I/O requests. Returns the number of SQEs submitted, if not
+    /// used alongside IORING_SETUP_SQPOLL. If the io_uring instance is uses
+    /// IORING_SETUP_SQPOLL, the value returned on success is not guaranteed
+    /// to match the amount of actually submitted sqes during this call. A value
+    /// higher or lower, including 0, may be returned.
+    /// Matches the implementation of io_uring_submit() in liburing.
+    pub unsafe fn submit(&mut self) -> Result<u32, err::Enter> {
+        self.submit_and_wait(0)
+    }
+
     /// Like submit(), but allows waiting for events as well.
     /// Returns the number of SQEs submitted.
     /// Matches the implementation of io_uring_submit_and_wait() in liburing.
-    pub unsafe fn submit_and_wait(&mut self, wait_nr: u32) -> u32 {
+    pub unsafe fn submit_and_wait(
+        &mut self,
+        wait_nr: u32,
+    ) -> Result<u32, err::Enter> {
         let submitted = self.flush_sq();
         let mut flags = IoringEnterFlags::empty();
 
@@ -230,43 +253,37 @@ impl IoUring {
             if wait_nr > 0 || self.flags.contains(IoringSetupFlags::IOPOLL) {
                 flags.set(IoringEnterFlags::GETEVENTS, true);
             }
-            self.enter
+            return self.enter(submitted, wait_nr, flags);
         }
 
-        submitted
-
-        /*
-        if (self.sq_ring_needs_enter(&flags) or wait_nr > 0) {
-            if (wait_nr > 0 or (self.flags & linux.IORING_SETUP_IOPOLL) != 0) {
-                flags |= linux.IORING_ENTER_GETEVENTS;
-            }
-            return try self.enter(submitted, wait_nr, flags);
-        }
-        return submitted;
-        */
+        Ok(submitted)
     }
 
     /// Tell the kernel we have submitted SQEs and/or want to wait for CQEs.
     /// Returns the number of SQEs submitted.
-    pub fn enter(
+    pub unsafe fn enter(
         &mut self,
         to_submit: u32,
         min_complete: u32,
-        flags: u32,
-    ) -> u32 {
+        flags: IoringEnterFlags,
+    ) -> Result<u32, err::Enter> {
+        use err::Enter::*;
+        use rustix::io::Errno;
 
-        let res = io_uring_ent
-    }
-
-    /// Returns the number of flushed and unflushed SQEs pending in the
-    /// submission queue. In other words, this is the number of SQEs in the
-    /// submission queue, i.e. its length. These are SQEs that the kernel is
-    /// yet to consume. Matches the implementation of io_uring_sq_ready in
-    /// liburing.
-    pub unsafe fn sq_ready(&mut self) -> u32 {
-        // Always use the shared ring state (i.e. not self.sqe_head) to
-        // avoid going out of sync, see https://github.com/axboe/liburing/issues/92.
-        self.sqe_tail.wrapping_sub(self.shared_sq_head())
+        io_uring_enter(self.fd.as_fd(), to_submit, min_complete, flags).map_err(
+            |err| match err {
+                Errno::AGAIN => SystemResources,
+                Errno::BADF => FileDescriptorInvalid,
+                Errno::BADFD => FileDescriptorInBadState,
+                Errno::BUSY => CompletionQueueOvercommitted,
+                Errno::INVAL => SubmissionQueueEntryInvalid,
+                Errno::FAULT => BufferInvalid,
+                Errno::NXIO => RingShuttingDown,
+                Errno::OPNOTSUPP => OpcodeNotSupported,
+                Errno::INTR => SignalInterrupt,
+                errno => UnexpectedErrno(errno),
+            },
+        )
     }
 
     /// Sync internal state with kernel ring state on the SQ side.
@@ -311,7 +328,6 @@ impl IoUring {
         flags: &mut IoringEnterFlags,
     ) -> bool {
         assert!(flags.is_empty());
-
         if !self.flags.contains(IoringSetupFlags::SQPOLL) {
             return true;
         }
@@ -322,20 +338,17 @@ impl IoUring {
         }
         false
     }
-}
 
-#[derive(Debug)]
-pub enum InitErr {
-    EntriesZero,
-    EntriesNotPowerOfTwo,
-    ParamsOutsideAccessibleAddressSpace,
-    ArgumentsInvalid,
-    ProcessFdQuotaExceeded,
-    SystemFdQuotaExceeded,
-    SystemResources,
-    PermissionDenied,
-    SystemOutdated,
-    UnexpectedErrno(io::Errno),
+    /// Returns the number of flushed and unflushed SQEs pending in the
+    /// submission queue. In other words, this is the number of SQEs in the
+    /// submission queue, i.e. its length. These are SQEs that the kernel is
+    /// yet to consume. Matches the implementation of io_uring_sq_ready in
+    /// liburing.
+    pub unsafe fn sq_ready(&mut self) -> u32 {
+        // Always use the shared ring state (i.e. not self.sqe_head) to
+        // avoid going out of sync, see https://github.com/axboe/liburing/issues/92.
+        self.sqe_tail.wrapping_sub(self.shared_sq_head())
+    }
 }
 
 pub enum GetSqeErr {
@@ -384,6 +397,67 @@ impl RwMmap {
 
     unsafe fn atomic_u32_at(&mut self, byte_offset: u32) -> &AtomicU32 {
         AtomicU32::from_ptr(self.mut_ptr_at(byte_offset))
+    }
+}
+
+mod err {
+    #[derive(Debug)]
+    pub enum Init {
+        EntriesZero,
+        EntriesNotPowerOfTwo,
+        ParamsOutsideAccessibleAddressSpace,
+
+        /// The resv array contains non-zero data, p.flags contains an
+        /// unsupported flag, entries out of bounds,
+        /// IORING_SETUP_SQ_AFF was specified without IORING_SETUP_SQPOLL,
+        /// or IORING_SETUP_CQSIZE was specified but
+        /// linux.io_uring_params.cq_entries was invalid:
+        ArgumentsInvalid,
+        ProcessFdQuotaExceeded,
+        SystemFdQuotaExceeded,
+        SystemResources,
+        /// IORING_SETUP_SQPOLL was specified but effective user ID lacks
+        /// sufficient privileges, or a container seccomp policy
+        /// prohibits io_uring syscalls:
+        PermissionDenied,
+        SystemOutdated,
+        UnexpectedErrno(rustix::io::Errno),
+    }
+
+    pub enum Enter {
+        /// The kernel was unable to allocate memory or ran out of resources
+        /// for the request. The application should waitufor some
+        /// completions and try again:
+        SystemResources,
+        /// The SQE `fd` is invalid, or IOSQE_FIXED_FILE was set but no files
+        /// were registered:
+        FileDescriptorInvalid,
+        /// The file descriptor is valid, but the ring is not in the right
+        /// state. See io_uring_register(2) for how to enable the ring.
+        FileDescriptorInBadState,
+        /// The application attempted to overcommit the number of requests it
+        /// can have pending. The application should wait for some
+        /// completions and try again:
+        CompletionQueueOvercommitted,
+        /// The SQE is invalid, or valid but the ring was setup with
+        /// IORING_SETUP_IOPOLL:
+        SubmissionQueueEntryInvalid,
+        /// The buffer is outside the process' accessible address space, or
+        /// IORING_OP_READ_FIXED or IORING_OP_WRITE_FIXED was specified
+        /// but no buffers were registered, or the range described by
+        /// `addr` and `len` is not within the buffer registered at
+        /// `buf_index`:
+        BufferInvalid,
+        RingShuttingDown,
+        /// The kernel believes our `self.fd` does not refer to an io_uring
+        /// instance, or the opcode is valid but not supported by this
+        /// kernel (more likely):
+        OpcodeNotSupported,
+        /// The operation was interrupted by a delivery of a signal before it
+        /// could complete. This can happen while waiting for events
+        /// with IORING_ENTER_GETEVENTS:
+        SignalInterrupt,
+        UnexpectedErrno(rustix::io::Errno),
     }
 }
 

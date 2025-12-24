@@ -470,6 +470,7 @@ impl RwMmap {
 }
 
 mod err {
+    #[derive(Debug)]
     pub enum Init {
         EntriesZero,
         EntriesNotPowerOfTwo,
@@ -492,6 +493,7 @@ mod err {
         UnexpectedErrno(rustix::io::Errno),
     }
 
+    #[derive(Debug)]
     pub enum Enter {
         /// The kernel was unable to allocate memory or ran out of resources
         /// for the request. The application should waitufor some
@@ -528,6 +530,7 @@ mod err {
         UnexpectedErrno(rustix::io::Errno),
     }
 
+    #[derive(Debug)]
     pub enum GetSqe {
         SubmissionQueueFull,
     }

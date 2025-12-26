@@ -284,6 +284,16 @@ impl IoUring {
     }
 
     /// For advanced use cases only that implement custom completion queue
+    /// methods. If you use copy_cqes() or copy_cqe() you must not call
+    /// cqe_seen() or cq_advance(). Must be called exactly once after a
+    /// zero-copy CQE has been processed by your application.
+    /// Not idempotent, calling more than once will result in other CQEs being
+    /// lost. Matches the implementation of cqe_seen() in liburing.
+    pub unsafe fn cqe_seen(&mut self, _cqe: *const io_uring_cqe) {
+        self.cq.advance(&mut self.mmap, 1);
+    }
+
+    /// For advanced use cases only that implement custom completion queue
     /// methods. Matches the implementation of cq_advance() in liburing.
     pub unsafe fn cq_advance(&mut self, count: u32) {
         self.cq.advance(&mut self.mmap, count);

@@ -283,6 +283,13 @@ impl IoUring {
         self.cq.ready(&mut self.mmap)
     }
 
+    /// Matches the implementation of cq_ring_needs_flush() in liburing.
+    pub unsafe fn cq_ring_needs_flush(&mut self) -> bool {
+        self.sq
+            .flags_shared(&mut self.mmap)
+            .contains(IoringSqFlags::CQ_OVERFLOW)
+    }
+
     /// For advanced use cases only that implement custom completion queue
     /// methods. If you use copy_cqes() or copy_cqe() you must not call
     /// cqe_seen() or cq_advance(). Must be called exactly once after a
@@ -506,6 +513,8 @@ impl RwMmap {
         (self.ptr as *mut u8).add(byte_offset as usize) as *mut T
     }
 
+    // self is mut beause Atomics need a mutable pointer
+    // TODO: is this correct?
     unsafe fn atomic_u32_at(&mut self, byte_offset: u32) -> &AtomicU32 {
         AtomicU32::from_ptr(self.mut_ptr_at(byte_offset))
     }

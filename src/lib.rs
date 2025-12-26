@@ -9,14 +9,14 @@ const _: () = assert!(usize::BITS >= 32);
 pub use rustix;
 
 use core::ffi::c_void;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::AtomicU32;
 use core::{assert, assert_eq, assert_ne, cmp, mem, ptr};
 use rustix::fd::{AsFd, BorrowedFd, OwnedFd};
 use rustix::io;
 use rustix::io_uring::{
-    io_cqring_offsets, io_uring_cqe, io_uring_enter, io_uring_params,
-    io_uring_setup, io_uring_sqe, IoringEnterFlags, IoringFeatureFlags,
-    IoringSetupFlags, IoringSqFlags, IORING_OFF_SQ_RING,
+    io_uring_cqe, io_uring_enter, io_uring_params, io_uring_setup,
+    io_uring_sqe, IoringEnterFlags, IoringFeatureFlags, IoringSetupFlags,
+    IoringSqFlags, IORING_OFF_SQ_RING,
 };
 
 use rustix::mm;
@@ -27,8 +27,8 @@ pub struct IoUring {
     mmap: RwMmap,
     pub flags: IoringSetupFlags,
     pub features: IoringFeatureFlags,
-    pub cq_off: io_cqring_offsets,
     sq: queues::SubmissionQueue,
+    cq: queues::CompletionQueue,
 }
 
 impl IoUring {
@@ -154,18 +154,16 @@ impl IoUring {
             assert_eq!(*mmap_rings.ptr_at::<u32>(p.cq_off.overflow), 0);
         }
 
+        let cq = unsafe { queues::CompletionQueue::new(p, &mmap_rings) };
+
         Ok(Self {
             fd,
             mmap: mmap_rings,
             flags: p.flags,
             features: p.features,
-            cq_off: p.cq_off,
             sq,
+            cq,
         })
-    }
-
-    unsafe fn cq_head_shared(&mut self) -> u32 {
-        self.mmap.atomic_u32_at(self.cq_off.head).load(Ordering::Acquire)
     }
 
     /// Returns a reference to a vacant SQE, or an error if the submission
@@ -282,10 +280,13 @@ impl IoUring {
     /// These are CQEs that the application is yet to consume.
     /// Matches the implementation of io_uring_cq_ready in liburing.
     pub unsafe fn cq_ready(&mut self) -> u32 {
-        let cq_tail_shared =
-            self.mmap.atomic_u32_at(self.cq_off.tail).load(Ordering::Acquire);
+        self.cq.ready(&mut self.mmap)
+    }
 
-        cq_tail_shared.wrapping_sub(self.cq_head_shared())
+    /// For advanced use cases only that implement custom completion queue
+    /// methods. Matches the implementation of cq_advance() in liburing.
+    pub unsafe fn cq_advance(&mut self, count: u32) {
+        self.cq.advance(&mut self.mmap, count);
     }
 }
 
@@ -302,8 +303,8 @@ mod queues {
     use rustix::fd::BorrowedFd;
     use rustix::io;
     use rustix::io_uring::{
-        io_sqring_offsets, io_uring_params, io_uring_sqe, IoringSqFlags,
-        IORING_OFF_SQES,
+        io_cqring_offsets, io_sqring_offsets, io_uring_params, io_uring_sqe,
+        IoringSqFlags, IORING_OFF_SQES,
     };
     use rustix::mm;
 
@@ -354,17 +355,16 @@ mod queues {
             Ok(sq)
         }
 
-        pub unsafe fn head_shared(&mut self, mmap_rings: &mut RwMmap) -> u32 {
-            mmap_rings.atomic_u32_at(self.head).load(Ordering::Acquire)
+        pub unsafe fn head_shared(&mut self, mmap: &mut RwMmap) -> u32 {
+            mmap.atomic_u32_at(self.head).load(Ordering::Acquire)
         }
 
         pub unsafe fn flags_shared(
             &mut self,
-            mmap_rings: &mut RwMmap,
+            mmap: &mut RwMmap,
         ) -> IoringSqFlags {
-            let atomic_u32 = mmap_rings
-                .atomic_u32_at(self.off.flags)
-                .load(Ordering::Relaxed);
+            let atomic_u32 =
+                mmap.atomic_u32_at(self.off.flags).load(Ordering::Relaxed);
 
             IoringSqFlags::from_bits_retain(atomic_u32)
         }
@@ -422,6 +422,36 @@ mod queues {
             // Always use the shared ring state (i.e. not self.sqe_head) to
             // avoid going out of sync, see https://github.com/axboe/liburing/issues/92.
             self.tail.wrapping_sub(self.head_shared(mmap))
+        }
+    }
+
+    pub struct CompletionQueue {
+        off: io_cqring_offsets,
+        mask: u32,
+    }
+
+    impl CompletionQueue {
+        pub unsafe fn new(p: &io_uring_params, mmap: &RwMmap) -> Self {
+            Self { off: p.cq_off, mask: *mmap.ptr_at(p.cq_off.ring_mask) }
+        }
+        unsafe fn head_shared(&mut self, mmap: &mut RwMmap) -> u32 {
+            mmap.atomic_u32_at(self.off.head).load(Ordering::Acquire)
+        }
+
+        // TODO: inline these?
+        unsafe fn tail_shared(&mut self, mmap: &mut RwMmap) -> u32 {
+            mmap.atomic_u32_at(self.off.tail).load(Ordering::Acquire)
+        }
+
+        pub unsafe fn ready(&mut self, mmap: &mut RwMmap) -> u32 {
+            self.tail_shared(mmap).wrapping_sub(self.head_shared(mmap))
+        }
+
+        pub unsafe fn advance(&mut self, mmap: &mut RwMmap, count: u32) {
+            if count > 0 {
+                mmap.atomic_u32_at(self.off.head)
+                    .fetch_add(count, Ordering::Release);
+            }
         }
     }
 }

@@ -427,13 +427,19 @@ impl SubmissionQueue {
     // man 7 io_uring:
     // - You add SQEs to the tail of the SQ. The kernel reads SQEs off the head
     //   of the queue.
-    unsafe fn read_head(&mut self, mmap: &mut RwMmap) -> u32 {
+    unsafe fn read_head(&self, mmap: &mut RwMmap) -> u32 {
         mmap.atomic_u32_at(self.off.head).load(Ordering::Acquire)
     }
 
     unsafe fn read_flags(&self, mmap: &mut RwMmap) -> IoringSqFlags {
         let raw = mmap.atomic_u32_at(self.off.flags).load(Ordering::Relaxed);
         IoringSqFlags::from_bits_retain(raw)
+    }
+
+    // TODO: hang on... this returns mutable... implying we write it
+    // non-atomically
+    unsafe fn read_tail(&self, mmap: &mut RwMmap) -> *mut u32 {
+        mmap.mut_ptr_at::<u32>(self.off.tail)
     }
 
     unsafe fn get_sqe(
@@ -460,7 +466,7 @@ impl SubmissionQueue {
             // Fill in SQEs that we have queued up, adding them to the
             // kernel ring.
             let to_submit = self.sqe_tail.wrapping_sub(self.sqe_head);
-            let tail = mmap.mut_ptr_at::<u32>(self.off.tail);
+            let tail = self.read_tail(mmap);
 
             for _ in 0..to_submit {
                 let sqe: *mut u32 =
@@ -507,17 +513,17 @@ impl CompletionQueue {
             entries: p.cq_entries,
         }
     }
-    unsafe fn head_shared(&mut self, mmap: &mut RwMmap) -> u32 {
-        mmap.atomic_u32_at(self.off.head).load(Ordering::Acquire)
+
+    unsafe fn read_head(&mut self, mmap: &mut RwMmap) -> u32 {
+        *mmap.ptr_at::<u32>(self.off.tail)
     }
 
-    // TODO: inline these?
     unsafe fn read_tail(&mut self, mmap: &mut RwMmap) -> u32 {
         mmap.atomic_u32_at(self.off.tail).load(Ordering::Acquire)
     }
 
     unsafe fn ready(&mut self, mmap: &mut RwMmap) -> u32 {
-        self.read_tail(mmap).wrapping_sub(self.head_shared(mmap))
+        self.read_tail(mmap).wrapping_sub(self.read_head(mmap))
     }
 
     unsafe fn advance(&mut self, mmap: &mut RwMmap, count: u32) {
@@ -691,12 +697,12 @@ mod tests {
     use super::*;
     use err::*;
     use pretty_assertions::assert_eq;
-    // TODO: the only place we use these constants, is in these tests?
     use rustix::{
         io::ReadWriteFlags,
+        // TODO: the only place we use these constants, is in these tests?
         io_uring::{
-            io_uring_ptr, ioprio_union, IoringOp, IORING_OFF_CQ_RING,
-            IORING_OFF_SQES,
+            io_uring_ptr, ioprio_union, IoringOp, IoringSqeFlags,
+            IORING_OFF_CQ_RING, IORING_OFF_SQES,
         },
     };
 
@@ -761,7 +767,12 @@ mod tests {
         // TODO: rustix struct lacks resv...should be fine?
 
         assert_eq!(ring.sq.sqe_head, 0);
-        assert_eq!(ring.sq.sqe_tail, 0);
+        assert_eq!(ring.sq.sqe_tail, 1);
+        unsafe {
+            assert_eq!(*(ring.sq.read_tail(&mut ring.mmap)), 0);
+            assert_eq!(ring.cq.read_head(&mut ring.mmap), 0);
+        }
+
         /*
         try testing.expectEqual(@as(u32, 0), ring.sq.sqe_head);
         try testing.expectEqual(@as(u32, 1), ring.sq.sqe_tail);

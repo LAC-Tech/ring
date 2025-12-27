@@ -710,7 +710,13 @@ mod tests {
     use err::*;
     use pretty_assertions::assert_eq;
     // TODO: the only place we use these constants, is in these tests?
-    use rustix::io_uring::{IoringOp, IORING_OFF_CQ_RING, IORING_OFF_SQES};
+    use rustix::{
+        io::ReadWriteFlags,
+        io_uring::{
+            io_uring_ptr, ioprio_union, IoringOp, IORING_OFF_CQ_RING,
+            IORING_OFF_SQES,
+        },
+    };
 
     #[test]
     fn structs_offsets_entries() {
@@ -730,65 +736,83 @@ mod tests {
         );
     }
 
+    // It's just a u16 in the C struct
+    fn ioprio_to_u32(i: ioprio_union) -> u16 {
+        // 100% safe, 'cause Stone Cold said so
+        unsafe { mem::transmute::<_, u16>(i) }
+    }
+
     #[test]
     fn nop() {
         let mut ring = IoUring::new(1, IoringSetupFlags::default()).unwrap();
         let sqe = unsafe { *ring.nop(0xaaaaaaaa).unwrap() };
 
+        //
+        // Asserting sqe, field by field, as it lacks `Debug`
+        //
         assert_eq!(sqe.opcode, IoringOp::Nop);
         assert_eq!(sqe.flags, IoringSqeFlags::empty());
+        assert_eq!(
+            ioprio_to_u32(sqe.ioprio),
+            ioprio_to_u32(ioprio_union::default())
+        );
+        assert_eq!(sqe.fd, 0);
+        assert_eq!(unsafe { sqe.off_or_addr2.off }, 0);
+        assert_eq!(
+            unsafe { sqe.addr_or_splice_off_in.addr },
+            io_uring_ptr::null()
+        );
+        assert_eq!(
+            // This isn't even a union in the C struct??
+            unsafe { sqe.len.len },
+            0
+        );
+        assert_eq!(unsafe { sqe.op_flags.rw_flags }, ReadWriteFlags::empty());
+        assert_eq!(sqe.user_data.u64_(), 0xaaaaaaaa);
+        assert_eq!(unsafe { sqe.buf.buf_index }, 0);
+        assert_eq!(sqe.personality, 0);
+        assert_eq!(
+            unsafe { sqe.splice_fd_in_or_file_index_or_addr_len.splice_fd_in },
+            0
+        );
+        assert_eq!(unsafe { sqe.addr3_or_cmd.addr3.addr3 }, 0);
+        // TODO: rustix struct lacks resv...should be fine?
 
         /*
-        try testing.expectEqual(linux.io_uring_sqe{
-            .opcode = .NOP,
-            .flags = 0,
-            .ioprio = 0,
-            .fd = 0,
-            .off = 0,
-            .addr = 0,
-            .len = 0,
-            .rw_flags = 0,
+        try testing.expectEqual(@as(u32, 0), ring.sq.sqe_head);
+        try testing.expectEqual(@as(u32, 1), ring.sq.sqe_tail);
+        try testing.expectEqual(@as(u32, 0), ring.sq.tail.*);
+        try testing.expectEqual(@as(u32, 0), ring.cq.head.*);
+        try testing.expectEqual(@as(u32, 1), ring.sq_ready());
+        try testing.expectEqual(@as(u32, 0), ring.cq_ready());
+
+        try testing.expectEqual(@as(u32, 1), try ring.submit());
+        try testing.expectEqual(@as(u32, 1), ring.sq.sqe_head);
+        try testing.expectEqual(@as(u32, 1), ring.sq.sqe_tail);
+        try testing.expectEqual(@as(u32, 1), ring.sq.tail.*);
+        try testing.expectEqual(@as(u32, 0), ring.cq.head.*);
+        try testing.expectEqual(@as(u32, 0), ring.sq_ready());
+
+        try testing.expectEqual(linux.io_uring_cqe{
             .user_data = 0xaaaaaaaa,
-            .buf_index = 0,
-            .personality = 0,
-            .splice_fd_in = 0,
-            .addr3 = 0,
-            .resv = 0,
-        }, sqe.*);
-            try testing.expectEqual(@as(u32, 0), ring.sq.sqe_head);
-            try testing.expectEqual(@as(u32, 1), ring.sq.sqe_tail);
-            try testing.expectEqual(@as(u32, 0), ring.sq.tail.*);
-            try testing.expectEqual(@as(u32, 0), ring.cq.head.*);
-            try testing.expectEqual(@as(u32, 1), ring.sq_ready());
-            try testing.expectEqual(@as(u32, 0), ring.cq_ready());
+            .res = 0,
+            .flags = 0,
+        }, try ring.copy_cqe());
+        try testing.expectEqual(@as(u32, 1), ring.cq.head.*);
+        try testing.expectEqual(@as(u32, 0), ring.cq_ready());
 
-            try testing.expectEqual(@as(u32, 1), try ring.submit());
-            try testing.expectEqual(@as(u32, 1), ring.sq.sqe_head);
-            try testing.expectEqual(@as(u32, 1), ring.sq.sqe_tail);
-            try testing.expectEqual(@as(u32, 1), ring.sq.tail.*);
-            try testing.expectEqual(@as(u32, 0), ring.cq.head.*);
-            try testing.expectEqual(@as(u32, 0), ring.sq_ready());
-
-            try testing.expectEqual(linux.io_uring_cqe{
-                .user_data = 0xaaaaaaaa,
-                .res = 0,
-                .flags = 0,
-            }, try ring.copy_cqe());
-            try testing.expectEqual(@as(u32, 1), ring.cq.head.*);
-            try testing.expectEqual(@as(u32, 0), ring.cq_ready());
-
-            const sqe_barrier = try ring.nop(0xbbbbbbbb);
-            sqe_barrier.flags |= linux.IOSQE_IO_DRAIN;
-            try testing.expectEqual(@as(u32, 1), try ring.submit());
-            try testing.expectEqual(linux.io_uring_cqe{
-                .user_data = 0xbbbbbbbb,
-                .res = 0,
-                .flags = 0,
-            }, try ring.copy_cqe());
-            try testing.expectEqual(@as(u32, 2), ring.sq.sqe_head);
-            try testing.expectEqual(@as(u32, 2), ring.sq.sqe_tail);
-            try testing.expectEqual(@as(u32, 2), ring.sq.tail.*);
-            try testing.expectEqual(@as(u32, 2), ring.cq.head.*);
-            */
+        const sqe_barrier = try ring.nop(0xbbbbbbbb);
+        sqe_barrier.flags |= linux.IOSQE_IO_DRAIN;
+        try testing.expectEqual(@as(u32, 1), try ring.submit());
+        try testing.expectEqual(linux.io_uring_cqe{
+            .user_data = 0xbbbbbbbb,
+            .res = 0,
+            .flags = 0,
+        }, try ring.copy_cqe());
+        try testing.expectEqual(@as(u32, 2), ring.sq.sqe_head);
+        try testing.expectEqual(@as(u32, 2), ring.sq.sqe_tail);
+        try testing.expectEqual(@as(u32, 2), ring.sq.tail.*);
+        try testing.expectEqual(@as(u32, 2), ring.cq.head.*);
+        */
     }
 }

@@ -1,5 +1,3 @@
-// Ported from Zig's standard library io_uring implementation
-// Original:
 // https://codeberg.org/ziglang/zig/src/branch/0.15.x/lib/std/os/linux/IoUring.zig
 // Licensed under MIT License:
 // https://codeberg.org/ziglang/zig/src/branch/0.15.x/LICENSE
@@ -285,25 +283,33 @@ impl IoUring {
         self.cq.ready(&mut self.mmap)
     }
 
-    unsafe fn copy_cqes_ready(&mut self, cqes: &[io_uring_cqe]) -> u32 {
-        /*
-        let ready = self.cq_ready();
-        let count = cmp::min(cqes.len() as u32, ready);
-        let head = self.cq.head.* & self.cq.mask;
-
-        // before wrapping
-        const n = @min(self.cq.cqes.len - head, count);
-        @memcpy(cqes[0..n], self.cq.cqes[head..][0..n]);
-
-        if (count > n) {
-            // wrap self.cq.cqes
-            const w = count - n;
-            @memcpy(cqes[n..][0..w], self.cq.cqes[0..w]);
+    /// Copies as many CQEs as are ready, and that can fit into the destination
+    /// `cqes` slice. If none are available, enters into the kernel to wait
+    /// for at most `wait_nr` CQEs. Returns the number of CQEs copied,
+    /// advancing the CQ ring. Provides all the wait/peek methods found in
+    /// liburing, but with batching and a single method. The rationale for
+    /// copying CQEs rather than copying pointers is that pointers are 8 bytes
+    /// whereas CQEs are not much more at only 16 bytes, and this provides a
+    /// safer faster interface. Safer, because you no longer need to call
+    /// cqe_seen(), avoiding idempotency bugs. Faster, because we can now
+    /// amortize the atomic store release to `cq.head` across the batch. See https://github.com/axboe/liburing/issues/103#issuecomment-686665007.
+    /// Matches the implementation of io_uring_peek_batch_cqe() in liburing, but
+    /// supports waiting.
+    pub unsafe fn copy_cqes(
+        &mut self,
+        cqes: &mut [io_uring_cqe],
+        wait_nr: u32,
+    ) -> Result<u32, err::Enter> {
+        let count = self.cq.copy_ready_events(&mut self.mmap, cqes);
+        if count > 0 {
+            return Ok(count);
+        }
+        if self.cq_ring_needs_flush() || wait_nr > 0 {
+            self.enter(0, wait_nr, IoringEnterFlags::GETEVENTS)?;
+            return Ok(self.cq.copy_ready_events(&mut self.mmap, cqes));
         }
 
-        self.cq_advance(count);
-        return count;
-        */
+        Ok(0)
     }
 
     /// Matches the implementation of cq_ring_needs_flush() in liburing.
@@ -517,10 +523,14 @@ mod queues {
             // before wrapping
             let n = cmp::min(self.entries - head, count) as usize;
 
+            let ring_cqes =
+                mmap.slice_at::<io_uring_cqe>(self.off.cqes, self.entries);
+
             // io_uring_cqe is not copyable; it has an array field "big_cqe"
             // since big_cqe never seems to be read we shall copy it anyway
             {
-                let src = mmap.ptr_at::<io_uring_cqe>(self.off.cqes + head);
+                let head = head as usize;
+                let src = ring_cqes[head..head + n].as_ptr();
                 let dst = cqes.as_mut_ptr();
                 core::ptr::copy_nonoverlapping(src, dst, n);
             }
@@ -529,15 +539,14 @@ mod queues {
                 // wrap self.cq.cqes
                 let w = count as usize - n;
                 {
-                    let src = mmap.ptr_at::<io_uring_cqe>(self.off.cqes);
+                    let src = ring_cqes[0..w].as_ptr();
                     let dst = cqes[n..n + w].as_mut_ptr();
                     core::ptr::copy_nonoverlapping(src, dst, w);
                 }
             }
 
-            let count = count as u32;
             self.advance(mmap, count);
-            return count;
+            count
         }
     }
 }

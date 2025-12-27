@@ -17,7 +17,7 @@ use rustix::io;
 use rustix::io_uring::{
     io_uring_cqe, io_uring_enter, io_uring_params, io_uring_setup,
     io_uring_sqe, IoringEnterFlags, IoringFeatureFlags, IoringSetupFlags,
-    IoringSqFlags, IORING_OFF_SQ_RING,
+    IoringSqFlags, IoringSqeFlags, IORING_OFF_SQ_RING,
 };
 
 use rustix::mm;
@@ -707,10 +707,10 @@ mod err {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use err::*;
     use pretty_assertions::assert_eq;
     // TODO: the only place we use these constants, is in these tests?
-    use err::*;
-    use rustix::io_uring::{IORING_OFF_CQ_RING, IORING_OFF_SQES};
+    use rustix::io_uring::{IoringOp, IORING_OFF_CQ_RING, IORING_OFF_SQES};
 
     #[test]
     fn structs_offsets_entries() {
@@ -728,5 +728,67 @@ mod tests {
             Init::EntriesNotPowerOfTwo,
             IoUring::new(3, flags).unwrap_err()
         );
+    }
+
+    #[test]
+    fn nop() {
+        let mut ring = IoUring::new(1, IoringSetupFlags::default()).unwrap();
+        let sqe = unsafe { *ring.nop(0xaaaaaaaa).unwrap() };
+
+        assert_eq!(sqe.opcode, IoringOp::Nop);
+        assert_eq!(sqe.flags, IoringSqeFlags::empty());
+
+        /*
+        try testing.expectEqual(linux.io_uring_sqe{
+            .opcode = .NOP,
+            .flags = 0,
+            .ioprio = 0,
+            .fd = 0,
+            .off = 0,
+            .addr = 0,
+            .len = 0,
+            .rw_flags = 0,
+            .user_data = 0xaaaaaaaa,
+            .buf_index = 0,
+            .personality = 0,
+            .splice_fd_in = 0,
+            .addr3 = 0,
+            .resv = 0,
+        }, sqe.*);
+            try testing.expectEqual(@as(u32, 0), ring.sq.sqe_head);
+            try testing.expectEqual(@as(u32, 1), ring.sq.sqe_tail);
+            try testing.expectEqual(@as(u32, 0), ring.sq.tail.*);
+            try testing.expectEqual(@as(u32, 0), ring.cq.head.*);
+            try testing.expectEqual(@as(u32, 1), ring.sq_ready());
+            try testing.expectEqual(@as(u32, 0), ring.cq_ready());
+
+            try testing.expectEqual(@as(u32, 1), try ring.submit());
+            try testing.expectEqual(@as(u32, 1), ring.sq.sqe_head);
+            try testing.expectEqual(@as(u32, 1), ring.sq.sqe_tail);
+            try testing.expectEqual(@as(u32, 1), ring.sq.tail.*);
+            try testing.expectEqual(@as(u32, 0), ring.cq.head.*);
+            try testing.expectEqual(@as(u32, 0), ring.sq_ready());
+
+            try testing.expectEqual(linux.io_uring_cqe{
+                .user_data = 0xaaaaaaaa,
+                .res = 0,
+                .flags = 0,
+            }, try ring.copy_cqe());
+            try testing.expectEqual(@as(u32, 1), ring.cq.head.*);
+            try testing.expectEqual(@as(u32, 0), ring.cq_ready());
+
+            const sqe_barrier = try ring.nop(0xbbbbbbbb);
+            sqe_barrier.flags |= linux.IOSQE_IO_DRAIN;
+            try testing.expectEqual(@as(u32, 1), try ring.submit());
+            try testing.expectEqual(linux.io_uring_cqe{
+                .user_data = 0xbbbbbbbb,
+                .res = 0,
+                .flags = 0,
+            }, try ring.copy_cqe());
+            try testing.expectEqual(@as(u32, 2), ring.sq.sqe_head);
+            try testing.expectEqual(@as(u32, 2), ring.sq.sqe_tail);
+            try testing.expectEqual(@as(u32, 2), ring.sq.tail.*);
+            try testing.expectEqual(@as(u32, 2), ring.cq.head.*);
+            */
     }
 }

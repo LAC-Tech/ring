@@ -436,10 +436,9 @@ impl SubmissionQueue {
         IoringSqFlags::from_bits_retain(raw)
     }
 
-    // TODO: hang on... this returns mutable... implying we write it
-    // non-atomically
-    unsafe fn read_tail(&self, mmap: &mut RwMmap) -> *mut u32 {
-        mmap.mut_ptr_at::<u32>(self.off.tail)
+    // This method helped me catch a bug. I do not care if it is shallow.
+    unsafe fn read_tail(&self, mmap: &mut RwMmap) -> u32 {
+        *mmap.ptr_at::<u32>(self.off.tail)
     }
 
     unsafe fn get_sqe(
@@ -466,19 +465,19 @@ impl SubmissionQueue {
             // Fill in SQEs that we have queued up, adding them to the
             // kernel ring.
             let to_submit = self.sqe_tail.wrapping_sub(self.sqe_head);
-            let tail = self.read_tail(mmap);
+            let mut tail = self.read_tail(mmap);
 
             for _ in 0..to_submit {
                 let sqe: *mut u32 =
-                    mmap.mut_ptr_at(self.off.array + (*tail & self.mask));
+                    mmap.mut_ptr_at(self.off.array + (tail & self.mask));
 
-                *tail = *tail.wrapping_add(1);
+                tail = tail.wrapping_add(1);
                 *sqe = self.sqe_head & self.mask;
             }
 
             // Ensure that the kernel can actually see the SQE updates when
             // it sees the tail update.
-            mmap.atomic_u32_at(self.off.tail).store(*tail, Ordering::Release);
+            mmap.atomic_u32_at(self.off.tail).store(tail, Ordering::Release);
         }
 
         self.ready(mmap)

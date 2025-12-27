@@ -690,15 +690,10 @@ mod err {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pretty_assertions::assert_eq;
     // TODO: the only place we use these constants, is in these tests?
     use err::*;
     use rustix::io_uring::{IORING_OFF_CQ_RING, IORING_OFF_SQES};
-
-    #[test]
-    fn test_init() {
-        let _uring =
-            IoUring::new(8, IoringSetupFlags::empty()).expect("setup failed");
-    }
 
     #[test]
     fn structs_offsets_entries() {

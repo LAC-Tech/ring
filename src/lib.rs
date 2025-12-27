@@ -760,6 +760,8 @@ mod tests {
         assert_eq!(unsafe { sqe.addr3_or_cmd.addr3.addr3 }, 0);
         // TODO: rustix struct lacks resv...should be fine?
 
+        assert_eq!(ring.sq.sqe_head, 0);
+        assert_eq!(ring.sq.sqe_tail, 0);
         /*
         try testing.expectEqual(@as(u32, 0), ring.sq.sqe_head);
         try testing.expectEqual(@as(u32, 1), ring.sq.sqe_tail);

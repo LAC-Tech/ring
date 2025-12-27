@@ -1,8 +1,10 @@
 // Ported from Zig's standard library io_uring implementation
-// Original: https://codeberg.org/ziglang/zig/src/branch/master/lib/std/os/linux/IoUring.zig
-// Licensed under MIT License (see https://github.com/ziglang/zig/blob/master/LICENSE)
-#![cfg_attr(not(test), no_std)]
+// Original:
+// https://codeberg.org/ziglang/zig/src/branch/0.15.x/lib/std/os/linux/IoUring.zig
+// Licensed under MIT License:
+// https://codeberg.org/ziglang/zig/src/branch/0.15.x/LICENSE
 
+#![cfg_attr(not(test), no_std)]
 // I need to CONSTATLY cast things between usize and u32
 const _: () = assert!(usize::BITS >= 32);
 
@@ -283,6 +285,27 @@ impl IoUring {
         self.cq.ready(&mut self.mmap)
     }
 
+    /*
+    unsafe fn copy_cqes_ready(&mut self, cqes: &[io_uring_cqe]) -> u32 {
+        let ready = self.cq_ready();
+        let count = core::cmp::min(cqes.len() as u32, ready);
+        let head = self.cq.head.* & self.cq.mask;
+
+        // before wrapping
+        const n = @min(self.cq.cqes.len - head, count);
+        @memcpy(cqes[0..n], self.cq.cqes[head..][0..n]);
+
+        if (count > n) {
+            // wrap self.cq.cqes
+            const w = count - n;
+            @memcpy(cqes[n..][0..w], self.cq.cqes[0..w]);
+        }
+
+        self.cq_advance(count);
+        return count;
+    }
+    */
+
     /// Matches the implementation of cq_ring_needs_flush() in liburing.
     pub unsafe fn cq_ring_needs_flush(&mut self) -> bool {
         self.sq
@@ -307,13 +330,14 @@ impl IoUring {
     }
 }
 
-/// In the Zig version there's a lot of weird memory stuff going on:
-/// - SubmissionQueue stores mmap internally
-/// - SubmissionQUeue also stores slices derived from the mmap
-/// - CompletionQueue stores data derived from the mmap
-///
-/// In this version, we construct slices, pointers etc on demand with methods,
-/// passing the mmap in as needed
+/*
+ * In the Zig version there's a lot of weird memory stuff going on:
+ * - SubmissionQueue stores mmap internally
+ * - SubmissionQUeue also stores slices derived from the mmap
+ * - CompletionQueue stores data derived from the mmap
+ * In this version, we construct slices, pointers etc on demand with methods,
+ * passing the mmap in as need
+ */
 mod queues {
     use core::mem;
     use core::sync::atomic::Ordering;
@@ -343,11 +367,13 @@ mod queues {
             fd: BorrowedFd<'_>,
             mask: u32,
         ) -> io::Result<Self> {
-            // TODO: wtf does this mean
-            // "The motivation for the `sqes` and `array` indirection is to make
-            // it possible for the
-            // application to preallocate static linux.io_uring_sqe entries and
-            // then replay them when needed."
+            /*
+             * TODO: wtf does this mean:
+             * "The motivation for the `sqes` and `array` indirection is to
+             * make it possible for the application to preallocate static
+             * linux.io_uring_sqe entries and then replay them when needed."
+             */
+
             let size_sqes =
                 (p.sq_entries * mem::size_of::<io_uring_sqe>() as u32) as usize;
 

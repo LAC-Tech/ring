@@ -285,10 +285,10 @@ impl IoUring {
         self.cq.ready(&mut self.mmap)
     }
 
-    /*
     unsafe fn copy_cqes_ready(&mut self, cqes: &[io_uring_cqe]) -> u32 {
+        /*
         let ready = self.cq_ready();
-        let count = core::cmp::min(cqes.len() as u32, ready);
+        let count = cmp::min(cqes.len() as u32, ready);
         let head = self.cq.head.* & self.cq.mask;
 
         // before wrapping
@@ -303,8 +303,8 @@ impl IoUring {
 
         self.cq_advance(count);
         return count;
+        */
     }
-    */
 
     /// Matches the implementation of cq_ring_needs_flush() in liburing.
     pub unsafe fn cq_ring_needs_flush(&mut self) -> bool {
@@ -337,13 +337,13 @@ impl IoUring {
  * passing the mmap in as need
  */
 mod queues {
-    use core::mem;
     use core::sync::atomic::Ordering;
+    use core::{cmp, mem};
     use rustix::fd::BorrowedFd;
     use rustix::io;
     use rustix::io_uring::{
-        io_cqring_offsets, io_sqring_offsets, io_uring_params, io_uring_sqe,
-        IoringSqFlags, IORING_OFF_SQES,
+        io_cqring_offsets, io_sqring_offsets, io_uring_cqe, io_uring_params,
+        io_uring_sqe, IoringSqFlags, IORING_OFF_SQES,
     };
     use rustix::mm;
 
@@ -473,23 +473,29 @@ mod queues {
     pub struct CompletionQueue {
         off: io_cqring_offsets,
         mask: u32,
+        entries: u32,
     }
 
     impl CompletionQueue {
         pub unsafe fn new(p: &io_uring_params, mmap: &RwMmap) -> Self {
-            Self { off: p.cq_off, mask: *mmap.ptr_at(p.cq_off.ring_mask) }
+            Self {
+                off: p.cq_off,
+                mask: *mmap.ptr_at(p.cq_off.ring_mask),
+
+                entries: p.cq_entries,
+            }
         }
         unsafe fn head_shared(&mut self, mmap: &mut RwMmap) -> u32 {
             mmap.atomic_u32_at(self.off.head).load(Ordering::Acquire)
         }
 
         // TODO: inline these?
-        unsafe fn tail_shared(&mut self, mmap: &mut RwMmap) -> u32 {
+        unsafe fn read_tail(&mut self, mmap: &mut RwMmap) -> u32 {
             mmap.atomic_u32_at(self.off.tail).load(Ordering::Acquire)
         }
 
         pub unsafe fn ready(&mut self, mmap: &mut RwMmap) -> u32 {
-            self.tail_shared(mmap).wrapping_sub(self.head_shared(mmap))
+            self.read_tail(mmap).wrapping_sub(self.head_shared(mmap))
         }
 
         pub unsafe fn advance(&mut self, mmap: &mut RwMmap, count: u32) {
@@ -497,6 +503,40 @@ mod queues {
                 mmap.atomic_u32_at(self.off.head)
                     .fetch_add(count, Ordering::Release);
             }
+        }
+
+        pub unsafe fn copy_ready_events(
+            &mut self,
+            mmap: &mut RwMmap,
+            cqes: &mut [io_uring_cqe],
+        ) -> u32 {
+            let ready = self.ready(mmap);
+            let count = cmp::min(cqes.len() as u32, ready);
+            let head = *mmap.ptr_at(self.off.head) & self.mask;
+
+            // before wrapping
+            let n = cmp::min(self.entries - head, count);
+
+            let ring_cqes = {
+                let start = self.off.cqes + head;
+                let end = start + n;
+                mmap.slice_at::<io_uring_cqe>(start, end);
+            };
+
+            cqes[0..n as usize].copy_from_slice(ring_cqes);
+
+            /*
+            @memcpy(cqes[0..n], self.cq.cqes[head..][0..n]);
+
+            if (count > n) {
+                // wrap self.cq.cqes
+                const w = count - n;
+                @memcpy(cqes[n..][0..w], self.cq.cqes[0..w]);
+            }
+
+            self.cq_advance(count);
+            return count;
+            */
         }
     }
 }
@@ -545,6 +585,11 @@ impl RwMmap {
     // TODO: is this correct?
     unsafe fn atomic_u32_at(&mut self, byte_offset: u32) -> &AtomicU32 {
         AtomicU32::from_ptr(self.mut_ptr_at(byte_offset))
+    }
+
+    unsafe fn slice_at<T>(&self, byte_offset: u32, len: u32) -> &[T] {
+        let ptr = self.ptr_at::<T>(byte_offset);
+        &*core::ptr::slice_from_raw_parts(ptr, len as usize)
     }
 }
 

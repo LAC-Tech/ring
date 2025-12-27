@@ -40,7 +40,7 @@ Rust Atomics [are explicilty documented as following the same rules as C++20 ato
 - `AcqRel`
 - `SeqCst`
 
-### Correspondence Table
+### Correspondence between Zig and Rust orderings
 
 Limiting ourselves to the orderings found in `IoUring.zig`. I will quote cppreference, and the rust docs in order
 

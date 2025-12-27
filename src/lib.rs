@@ -6,6 +6,7 @@
 // I need to CONSTATLY cast things between usize and u32
 const _: () = assert!(usize::BITS >= 32);
 
+pub mod prep;
 pub use rustix;
 
 use core::ffi::c_void;
@@ -345,6 +346,22 @@ impl IoUring {
     /// methods. Matches the implementation of cq_advance() in liburing.
     pub unsafe fn cq_advance(&mut self, count: u32) {
         self.cq.advance(&mut self.mmap, count);
+    }
+
+    /// Queues (but does not submit) an SQE to perform a no-op.
+    /// Returns a pointer to the SQE so that you can further modify the SQE for
+    /// advanced use cases. A no-op is more useful than may appear at first
+    /// glance. For example, you could call `drain_previous_sqes()` on the
+    /// returned SQE, to use the no-op to know when the ring is idle before
+    /// acting on a kill signal.
+    pub unsafe fn nop(
+        &mut self,
+        user_data: u64,
+    ) -> Result<*mut io_uring_sqe, err::GetSqe> {
+        let sqe = self.get_sqe()?;
+        prep::nop(sqe);
+        (*sqe).user_data = user_data.into();
+        Ok(sqe)
     }
 }
 

@@ -409,15 +409,6 @@ mod queues {
             mmap.atomic_u32_at(self.off.head).load(Ordering::Acquire)
         }
 
-        pub unsafe fn read_tail(&self, mmap: &RwMmap) -> *const u32 {
-            mmap.ptr_at(self.off.tail)
-        }
-
-        pub unsafe fn write_tail(&mut self, mmap: &mut RwMmap, new_tail: u32) {
-            mmap.atomic_u32_at(self.off.tail)
-                .store(new_tail, Ordering::Release);
-        }
-
         pub unsafe fn read_flags(&self, mmap: &mut RwMmap) -> IoringSqFlags {
             let raw =
                 mmap.atomic_u32_at(self.off.flags).load(Ordering::Relaxed);

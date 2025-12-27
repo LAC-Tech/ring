@@ -10,7 +10,7 @@ We can see atomic operations used to access parts of the main mmap:
 | `sq.head`   | `sq_off.head`     | acquire     | N/A     |
 | `sq.tail`   | `sq_off.tail`     | non-atomic  | release |
 | `cq.head`   | `cq_off.head`     | non-atomic  | release |
-| `cq.head`   | `cq_off.tail`     | acquire     | N/A     |
+| `cq.tail`   | `cq_off.tail`     | acquire     | N/A     |
 
 This seems to roughly match what is described in `man 7 io_uring`:
 

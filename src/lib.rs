@@ -312,6 +312,19 @@ impl IoUring {
         Ok(0)
     }
 
+    /// Returns a copy of an I/O completion, waiting for it if necessary, and
+    /// advancing the CQ ring. A convenience method for `copy_cqes()` for
+    /// when you don't need to batch or peek.
+    pub unsafe fn copy_cqe(&mut self) -> Result<io_uring_cqe, err::Enter> {
+        let mut cqes = [io_uring_cqe::default(); 1];
+        loop {
+            let count = self.copy_cqes(&mut cqes, 1)?;
+            if count > 0 {
+                return Ok(core::ptr::read(&cqes[0]));
+            }
+        }
+    }
+
     /// Matches the implementation of cq_ring_needs_flush() in liburing.
     pub unsafe fn cq_ring_needs_flush(&mut self) -> bool {
         self.sq.read_flags(&mut self.mmap).contains(IoringSqFlags::CQ_OVERFLOW)
@@ -599,7 +612,7 @@ impl RwMmap {
 
     unsafe fn slice_at<T>(&self, byte_offset: u32, len: u32) -> &[T] {
         let ptr = self.ptr_at::<T>(byte_offset);
-        &*core::ptr::slice_from_raw_parts(ptr, len as usize)
+        &*ptr::slice_from_raw_parts(ptr, len as usize)
     }
 }
 

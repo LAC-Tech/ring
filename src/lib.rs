@@ -512,31 +512,32 @@ mod queues {
         ) -> u32 {
             let ready = self.ready(mmap);
             let count = cmp::min(cqes.len() as u32, ready);
-            let head = *mmap.ptr_at(self.off.head) & self.mask;
+            let head = *mmap.ptr_at::<u32>(self.off.head) & self.mask;
 
             // before wrapping
-            let n = cmp::min(self.entries - head, count);
+            let n = cmp::min(self.entries - head, count) as usize;
 
-            let ring_cqes = {
-                let start = self.off.cqes + head;
-                let end = start + n;
-                mmap.slice_at::<io_uring_cqe>(start, end);
-            };
-
-            cqes[0..n as usize].copy_from_slice(ring_cqes);
-
-            /*
-            @memcpy(cqes[0..n], self.cq.cqes[head..][0..n]);
-
-            if (count > n) {
-                // wrap self.cq.cqes
-                const w = count - n;
-                @memcpy(cqes[n..][0..w], self.cq.cqes[0..w]);
+            // io_uring_cqe is not copyable; it has an array field "big_cqe"
+            // since big_cqe never seems to be read we shall copy it anyway
+            {
+                let src = mmap.ptr_at::<io_uring_cqe>(self.off.cqes + head);
+                let dst = cqes.as_mut_ptr();
+                core::ptr::copy_nonoverlapping(src, dst, n);
             }
 
-            self.cq_advance(count);
+            if count as usize > n {
+                // wrap self.cq.cqes
+                let w = count as usize - n;
+                {
+                    let src = mmap.ptr_at::<io_uring_cqe>(self.off.cqes);
+                    let dst = cqes[n..n + w].as_mut_ptr();
+                    core::ptr::copy_nonoverlapping(src, dst, w);
+                }
+            }
+
+            let count = count as u32;
+            self.advance(mmap, count);
             return count;
-            */
         }
     }
 }

@@ -21,6 +21,7 @@ use rustix::io_uring::{
 
 use rustix::mm;
 
+#[derive(Debug)]
 pub struct IoUring {
     pub fd: OwnedFd,
     // A single mmap call that contains both the sq and cq
@@ -368,6 +369,7 @@ mod queues {
 
     use crate::{err, RwMmap};
 
+    #[derive(Debug)]
     pub struct SubmissionQueue {
         // Contains the array with the actual sq entries
         mmap_entries: RwMmap,
@@ -489,6 +491,7 @@ mod queues {
         }
     }
 
+    #[derive(Debug)]
     pub struct CompletionQueue {
         off: io_cqring_offsets,
         mask: u32,
@@ -564,6 +567,7 @@ mod queues {
     }
 }
 
+#[derive(Debug)]
 struct RwMmap {
     ptr: *mut c_void,
     len: usize,
@@ -617,7 +621,7 @@ impl RwMmap {
 }
 
 mod err {
-    #[derive(Debug)]
+    #[derive(Debug, Eq, PartialEq)]
     pub enum Init {
         EntriesZero,
         EntriesNotPowerOfTwo,
@@ -686,10 +690,31 @@ mod err {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // TODO: the only place we use these constants, is in these tests?
+    use err::*;
+    use rustix::io_uring::{IORING_OFF_CQ_RING, IORING_OFF_SQES};
 
     #[test]
     fn test_init() {
         let _uring =
             IoUring::new(8, IoringSetupFlags::empty()).expect("setup failed");
+    }
+
+    #[test]
+    fn structs_offsets_entries() {
+        assert_eq!(120, mem::size_of::<io_uring_params>());
+        assert_eq!(64, mem::size_of::<io_uring_sqe>());
+        assert_eq!(16, mem::size_of::<io_uring_cqe>());
+
+        assert_eq!(0, IORING_OFF_SQ_RING);
+        assert_eq!(0x8000000, IORING_OFF_CQ_RING);
+        assert_eq!(0x10000000, IORING_OFF_SQES);
+
+        let flags = IoringSetupFlags::default();
+        assert_eq!(Init::EntriesZero, IoUring::new(0, flags).unwrap_err());
+        assert_eq!(
+            Init::EntriesNotPowerOfTwo,
+            IoUring::new(3, flags).unwrap_err()
+        );
     }
 }

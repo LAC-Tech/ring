@@ -260,7 +260,7 @@ impl IoUring {
             return true;
         }
 
-        let sq_flags = self.sq.flags_shared(&mut self.mmap);
+        let sq_flags = self.sq.read_flags(&mut self.mmap);
 
         if sq_flags.contains(IoringSqFlags::NEED_WAKEUP) {
             flags.set(IoringEnterFlags::SQ_WAKEUP, true);
@@ -308,9 +308,7 @@ impl IoUring {
 
     /// Matches the implementation of cq_ring_needs_flush() in liburing.
     pub unsafe fn cq_ring_needs_flush(&mut self) -> bool {
-        self.sq
-            .flags_shared(&mut self.mmap)
-            .contains(IoringSqFlags::CQ_OVERFLOW)
+        self.sq.read_flags(&mut self.mmap).contains(IoringSqFlags::CQ_OVERFLOW)
     }
 
     /// For advanced use cases only that implement custom completion queue
@@ -356,9 +354,16 @@ mod queues {
         mmap_entries: RwMmap,
         off: io_sqring_offsets,
         entries: u32,
-        head: u32,
-        tail: u32,
         mask: u32,
+
+        // We use `sqe_head` and `sqe_tail` in the same way as liburing:
+        // We increment `sqe_tail` (but not `tail`) for each call to
+        // `get_sqe()`. We then set `tail` to `sqe_tail` once, only
+        // when these events are actually submitted. This allows us to
+        // amortize the cost of the @atomicStore to `tail` across multiple
+        // SQEs.
+        sqe_head: u32,
+        sqe_tail: u32,
     }
 
     impl SubmissionQueue {
@@ -373,7 +378,6 @@ mod queues {
              * make it possible for the application to preallocate static
              * linux.io_uring_sqe entries and then replay them when needed."
              */
-
             let size_sqes =
                 (p.sq_entries * mem::size_of::<io_uring_sqe>() as u32) as usize;
 
@@ -390,53 +394,60 @@ mod queues {
                 entries: p.sq_entries,
                 off: p.sq_off,
                 mmap_entries,
-                head: 0,
-                tail: 0,
                 mask,
+                sqe_head: 0,
+                sqe_tail: 0,
             };
 
             Ok(sq)
         }
 
-        pub unsafe fn head_shared(&mut self, mmap: &mut RwMmap) -> u32 {
-            mmap.atomic_u32_at(self.head).load(Ordering::Acquire)
+        // man 7 io_uring:
+        // - You add SQEs to the tail of the SQ. The kernel reads SQEs off the
+        //   head of the queue.
+        pub unsafe fn read_head(&mut self, mmap: &mut RwMmap) -> u32 {
+            mmap.atomic_u32_at(self.off.head).load(Ordering::Acquire)
         }
 
-        pub unsafe fn flags_shared(
-            &mut self,
-            mmap: &mut RwMmap,
-        ) -> IoringSqFlags {
-            let atomic_u32 =
-                mmap.atomic_u32_at(self.off.flags).load(Ordering::Relaxed);
+        pub unsafe fn read_tail(&self, mmap: &RwMmap) -> *const u32 {
+            mmap.ptr_at(self.off.tail)
+        }
 
-            IoringSqFlags::from_bits_retain(atomic_u32)
+        pub unsafe fn write_tail(&mut self, mmap: &mut RwMmap, new_tail: u32) {
+            mmap.atomic_u32_at(self.off.tail)
+                .store(new_tail, Ordering::Release);
+        }
+
+        pub unsafe fn read_flags(&self, mmap: &mut RwMmap) -> IoringSqFlags {
+            let raw =
+                mmap.atomic_u32_at(self.off.flags).load(Ordering::Relaxed);
+            IoringSqFlags::from_bits_retain(raw)
         }
 
         pub unsafe fn get_sqe(
             &mut self,
             mmap: &mut RwMmap,
         ) -> Result<*mut io_uring_sqe, err::GetSqe> {
-            let head = self.head_shared(mmap);
-
+            let head = self.read_head(mmap);
             // Remember that these head and tail offsets wrap around every four
             // billion operations. We must therefore use wrapping addition
             // and subtraction to avoid a runtime crash.
-            let next = self.head.wrapping_add(1);
+            let next = self.sqe_tail.wrapping_add(1);
             if next.wrapping_sub(head) > self.entries {
                 return Err(err::GetSqe::SubmissionQueueFull);
             }
 
-            let sqe = self.mmap_entries.mut_ptr_at(self.tail & self.mask);
+            let sqe = self.mmap_entries.mut_ptr_at(self.sqe_tail & self.mask);
 
-            self.tail = next;
+            self.sqe_tail = next;
             Ok(sqe)
         }
 
         pub unsafe fn flush(&mut self, mmap: &mut RwMmap) -> u32 {
-            if self.head != self.tail {
+            if self.sqe_head != self.sqe_tail {
                 // Fill in SQEs that we have queued up, adding them to the
                 // kernel ring.
-                let to_submit = self.tail.wrapping_sub(self.head);
+                let to_submit = self.sqe_tail.wrapping_sub(self.sqe_head);
                 let tail = mmap.mut_ptr_at::<u32>(self.off.tail);
 
                 for _ in 0..to_submit {
@@ -444,7 +455,7 @@ mod queues {
                         mmap.mut_ptr_at(self.off.array + (*tail & self.mask));
 
                     *tail = *tail.wrapping_add(1);
-                    *sqe = self.head & self.mask;
+                    *sqe = self.sqe_head & self.mask;
                 }
 
                 // Ensure that the kernel can actually see the SQE updates when
@@ -464,7 +475,7 @@ mod queues {
         pub unsafe fn ready(&mut self, mmap: &mut RwMmap) -> u32 {
             // Always use the shared ring state (i.e. not self.sqe_head) to
             // avoid going out of sync, see https://github.com/axboe/liburing/issues/92.
-            self.tail.wrapping_sub(self.head_shared(mmap))
+            self.sqe_tail.wrapping_sub(self.read_head(mmap))
         }
     }
 

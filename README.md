@@ -1,8 +1,18 @@
-Pure rust, io_uring bindings that do not link libc. Inspired by the bindings in the Zig standard library, and also the C library liburing.
-
-Pull requests welcome.
-
 ⚠️ **WIP, not all tests have been implemented yet** ⚠️
+
+Rust io_uring bindings.
+
+- pure rust
+- `no_std`
+- does not link libc
+- simple API
+
+It's heavily based off of std.os.linux.IoUring.zig, but also takes some pointers (lol) from liburing.
+
+## Contribute
+
+I welcome pull requests, code reviews, etc. I am especially looking for help in establishing where the "safe" and "unsafe" boundaries should be.
+
 
 ## Why make more bindings when others exist?
 

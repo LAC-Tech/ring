@@ -40,12 +40,8 @@ impl IoUring {
     /// kernel will make the final call on how many entries the submission
     /// and completion queues will ultimately have, see https://github.com/torvalds/linux/blob/v5.8/fs/io_uring.c#L8027-L8050.
     /// Matches the interface of io_uring_queue_init() in liburing.
-    pub fn new(
-        entries: u32,
-        flags: IoringSetupFlags,
-    ) -> Result<Self, err::Init> {
+    pub fn new(entries: u32) -> Result<Self, err::Init> {
         let mut params = io_uring_params::default();
-        params.flags = flags;
         params.sq_thread_idle = 1000;
         Self::new_with_params(entries, &mut params)
     }
@@ -748,12 +744,8 @@ mod tests {
         assert_eq!(0x8000000, IORING_OFF_CQ_RING);
         assert_eq!(0x10000000, IORING_OFF_SQES);
 
-        let flags = IoringSetupFlags::default();
-        assert_eq!(Init::EntriesZero, IoUring::new(0, flags).unwrap_err());
-        assert_eq!(
-            Init::EntriesNotPowerOfTwo,
-            IoUring::new(3, flags).unwrap_err()
-        );
+        assert_eq!(Init::EntriesZero, IoUring::new(0).unwrap_err());
+        assert_eq!(Init::EntriesNotPowerOfTwo, IoUring::new(3).unwrap_err());
     }
 
     // It's just a u16 in the C struct
@@ -764,7 +756,7 @@ mod tests {
 
     #[test]
     fn nop() {
-        let mut ring = IoUring::new(1, IoringSetupFlags::default()).unwrap();
+        let mut ring = IoUring::new(1).unwrap();
         let sqe = unsafe { *ring.nop(0xaaaaaaaa).unwrap() };
 
         //

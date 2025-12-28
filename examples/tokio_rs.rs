@@ -1,38 +1,21 @@
-use ring::{IoUring};
+#![no_std]
+use ring::{rustix, IoUring};
+use rustix::fd::AsRawFd;
+use rustix::fs::{openat, Mode, OFlags, CWD};
+use rustix::io_uring::io_uring_cqe;
 
 fn main() {
-    let mut ring = IoUring::new(8);
+    let mut ring = IoUring::new(8).unwrap();
+
+    let fd = openat(CWD, "README.md", OFlags::RDONLY, Mode::empty()).unwrap();
+    let mut buf = [0; 1024];
+
+    let io_uring_cqe { user_data, res, .. } = unsafe {
+        ring.read(0x42, fd.as_raw_fd(), &mut buf, 0).unwrap();
+        ring.submit_and_wait(1).unwrap();
+        ring.copy_cqe().unwrap()
+    };
+
+    assert_eq!(user_data.u64_(), 0x42);
+    assert!(res >= 0, "read error: {}", res);
 }
-/*
-use io_uring::{opcode, types, IoUring};
-use std::os::unix::io::AsRawFd;
-use std::{fs, io};
-
-fn main() -> io::Result<()> {
-    let mut ring = IoUring::new(8)?;
-
-    let fd = fs::File::open("README.md")?;
-    let mut buf = vec![0; 1024];
-
-    let read_e = opcode::Read::new(types::Fd(fd.as_raw_fd()), buf.as_mut_ptr(), buf.len() as _)
-        .build()
-        .user_data(0x42);
-
-    // Note that the developer needs to ensure
-    // that the entry pushed into submission queue is valid (e.g. fd, buffer).
-    unsafe {
-        ring.submission()
-            .push(&read_e)
-            .expect("submission queue is full");
-    }
-
-    ring.submit_and_wait(1)?;
-
-    let cqe = ring.completion().next().expect("completion queue is empty");
-
-    assert_eq!(cqe.user_data(), 0x42);
-    assert!(cqe.result() >= 0, "read error: {}", cqe.result());
-
-    Ok(())
-}
-*/

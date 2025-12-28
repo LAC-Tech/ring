@@ -458,9 +458,9 @@ impl SubmissionQueue {
             for _ in 0..to_submit {
                 let sqe: *mut u32 =
                     mmap.mut_ptr_at(self.off.array + (tail & self.mask));
-
-                tail = tail.wrapping_add(1);
                 *sqe = self.sqe_head & self.mask;
+                tail = tail.wrapping_add(1);
+                self.sqe_head = self.sqe_head.wrapping_add(1);
             }
 
             // Ensure that the kernel can actually see the SQE updates when

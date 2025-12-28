@@ -502,7 +502,7 @@ impl CompletionQueue {
     }
 
     unsafe fn read_head(&mut self, mmap: &mut RwMmap) -> u32 {
-        *mmap.ptr_at::<u32>(self.off.tail)
+        *mmap.ptr_at::<u32>(self.off.head)
     }
 
     unsafe fn read_tail(&mut self, mmap: &mut RwMmap) -> u32 {
@@ -766,7 +766,7 @@ mod tests {
         assert_eq!(ring.sq.sqe_head, 1);
         assert_eq!(ring.sq.sqe_tail, 1);
         assert_eq!(unsafe { ring.sq.read_tail(&mut ring.mmap) }, 1);
-        assert_eq!(unsafe { ring.cq.read_head(&mut ring.mmap) }, 1);
+        assert_eq!(unsafe { ring.cq.read_head(&mut ring.mmap) }, 0);
         assert_eq!(unsafe { ring.sq_ready() }, 0);
 
         let cqe = unsafe { ring.copy_cqe().unwrap() };
@@ -775,6 +775,14 @@ mod tests {
         assert_eq!(cqe.flags, IoringCqeFlags::empty());
         assert_eq!(unsafe { ring.cq.read_head(&mut ring.mmap) }, 1);
         assert_eq!(unsafe { ring.cq_ready() }, 0);
+
+        let sqe_barrier = unsafe { ring.nop(0xbbbbbbbb).unwrap() };
+        unsafe { (*sqe_barrier).flags.set(IoringSqeFlags::IO_DRAIN, true) };
+        assert_eq!(unsafe { ring.submit() }, Ok(1));
+        let cqe = unsafe { ring.copy_cqe().unwrap() };
+        assert_eq!(cqe.user_data.u64_(), 0xbbbbbbbb);
+        assert_eq!(cqe.res, 0);
+        assert_eq!(cqe.flags, IoringCqeFlags::empty());
 
         /*
         const sqe_barrier = try ring.nop(0xbbbbbbbb);

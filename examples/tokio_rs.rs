@@ -10,9 +10,11 @@ fn main() {
     let fd = openat(CWD, "README.md", OFlags::RDONLY, Mode::empty()).unwrap();
     let mut buf = [0; 1024];
 
+    // Note that the developer needs to ensure
+    // that the entry pushed into submission queue is valid (e.g. fd, buffer).
     let io_uring_cqe { user_data, res, .. } = unsafe {
         ring.read(0x42, fd.as_raw_fd(), &mut buf, 0).unwrap();
-        ring.submit_and_wait(1).unwrap();
+        ring.submit_and_wait(1).expect("completion queue is empty");
         ring.copy_cqe().unwrap()
     };
 

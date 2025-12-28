@@ -1,8 +1,8 @@
 #![no_std]
-use ring::{rustix, IoUring};
-use rustix::fd::AsRawFd;
-use rustix::fs::{openat, Mode, OFlags, CWD};
-use rustix::io_uring::io_uring_cqe;
+use ring::rustix::fd::AsRawFd;
+use ring::rustix::fs::{openat, Mode, OFlags, CWD};
+use ring::rustix::io_uring::io_uring_cqe;
+use ring::IoUring;
 
 fn main() {
     let mut ring = IoUring::new(8).unwrap();

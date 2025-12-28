@@ -350,6 +350,21 @@ impl IoUring {
         (*sqe).user_data = user_data.into();
         Ok(sqe)
     }
+
+    /// Queues (but does not submit) an SQE to perform a `read(2)`
+    /// Returns a pointer to the SQE.
+    pub unsafe fn read(
+        &mut self,
+        user_data: u64,
+        fd: i32,
+        buffer: &mut [u8],
+        offset: u64,
+    ) -> Result<*mut io_uring_sqe, err::GetSqe> {
+        let sqe = self.get_sqe()?;
+        prep::read(sqe, fd, buffer, offset);
+        (*sqe).user_data.u64_ = user_data;
+        return Ok(sqe);
+    }
 }
 // Unlike the Zig version, we do not store the mmap; as it is used by the
 // CompletionQueue as well.

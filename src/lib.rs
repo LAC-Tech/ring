@@ -424,12 +424,11 @@ impl SubmissionQueue {
     // - "You add SQEs to the tail of the SQ. The kernel reads SQEs off the head
     //   of the queue."
     unsafe fn read_head(&self, mmap: &RwMmap) -> u32 {
-        mmap.read_u32_atomically_at(self.off.head, Ordering::Acquire)
+        mmap.atomic_load_u32_at(self.off.head, Ordering::Acquire)
     }
 
     unsafe fn read_flags(&self, mmap: &RwMmap) -> IoringSqFlags {
-        let bits =
-            mmap.read_u32_atomically_at(self.off.flags, Ordering::Relaxed);
+        let bits = mmap.atomic_load_u32_at(self.off.flags, Ordering::Relaxed);
         IoringSqFlags::from_bits_retain(bits)
     }
 
@@ -515,7 +514,7 @@ impl CompletionQueue {
     }
 
     unsafe fn read_tail(&mut self, mmap: &RwMmap) -> u32 {
-        mmap.read_u32_atomically_at(self.off.tail, Ordering::Acquire)
+        mmap.atomic_load_u32_at(self.off.tail, Ordering::Acquire)
     }
 
     unsafe fn ready(&mut self, mmap: &mut RwMmap) -> u32 {
@@ -609,12 +608,14 @@ impl RwMmap {
         (self.ptr as *mut u8).add(byte_offset as usize) as *mut T
     }
 
-    unsafe fn read_u32_atomically_at(
+    // Atomic needs a mutable ptr but we never mutate the value
+    // So this method avoids &mut self when we just want to read
+    unsafe fn atomic_load_u32_at(
         &self,
         byte_offset: u32,
         ordering: Ordering,
     ) -> u32 {
-        let ptr = (self.ptr as *mut u32).add(byte_offset as usize);
+        let ptr = self.ptr_at::<u32>(byte_offset) as *mut u32;
         AtomicU32::from_ptr(ptr).load(ordering)
     }
     /// Use this when you need to do atomic writes

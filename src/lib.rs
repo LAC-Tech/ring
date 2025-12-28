@@ -117,56 +117,41 @@ impl IoUring {
                 + p.cq_entries * mem::size_of::<io_uring_cqe>() as u32,
         ) as usize;
 
-        let mmap_rings = RwMmap::new(
+        let mut mmap = RwMmap::new(
             size,
             fd.as_fd(),
             mm::MapFlags::SHARED | mm::MapFlags::POPULATE,
             IORING_OFF_SQ_RING,
         )
         .map_err(UnexpectedErrno)?;
-        // TODO: usless assert?
-        assert_eq!(mmap_rings.len, size);
+
+        let sq_mask: u32 = unsafe { *mmap.ptr_at(p.sq_off.ring_mask) };
+        let sq = SubmissionQueue::new(&p, fd.as_fd(), sq_mask)
+            .map_err(UnexpectedErrno)?;
+        let mut cq = unsafe { CompletionQueue::new(&p, &mmap) };
+
+        // Check that our starting state is as we expect.
+        assert_eq!(unsafe { sq.read_head(&mut mmap) }, 0);
+        assert_eq!(unsafe { sq.read_tail(&mut mmap) }, 0);
+        assert_eq!(sq.mask, p.sq_entries - 1);
+        // Allow flags.* to be non-zero, since the kernel may set
+        // IORING_SQ_NEED_WAKEUP at any time.
+        assert_eq!(unsafe { *mmap.ptr_at::<u32>(p.sq_off.dropped) }, 0);
+        assert_eq!(sq.sqe_head, 0);
+        assert_eq!(sq.sqe_tail, 0);
+
+        assert_eq!(unsafe { cq.read_head(&mut mmap) }, 0);
+        assert_eq!(unsafe { cq.read_tail(&mut mmap) }, 0);
+        assert_eq!(cq.mask, p.cq_entries - 1);
+        assert_eq!(unsafe { *mmap.ptr_at::<u32>(p.cq_off.overflow) }, 1);
 
         // We expect the kernel copies p.sq_entries to the u32 pointed to by
         // p.sq_off.ring_entries, see https://github.com/torvalds/linux/blob/v5.8/fs/io_uring.c#L7843-L7844.
         unsafe {
-            assert_eq!(p.sq_entries, *mmap_rings.ptr_at(p.sq_off.ring_entries))
+            assert_eq!(p.sq_entries, *mmap.ptr_at(p.sq_off.ring_entries))
         };
 
-        // Check that our starting state is as we expect.
-        let sq_mask: u32 = unsafe { *mmap_rings.ptr_at(p.sq_off.ring_mask) };
-        unsafe {
-            assert_eq!(*mmap_rings.ptr_at::<u32>(p.sq_off.head), 0);
-            assert_eq!(*mmap_rings.ptr_at::<u32>(p.sq_off.tail), 0);
-            assert_eq!(sq_mask, p.sq_entries - 1,);
-            // Allow p.sq_off.flags to be non-zero, since the kernel may set
-            // IORING_SQ_NEED_WAKEUP at any time.
-            assert_eq!(*mmap_rings.ptr_at::<u32>(p.sq_off.dropped), 0);
-        }
-
-        let sq = SubmissionQueue::new(p, fd.as_fd(), sq_mask)
-            .map_err(UnexpectedErrno)?;
-
-        unsafe {
-            assert_eq!(*mmap_rings.ptr_at::<u32>(p.cq_off.head), 0);
-            assert_eq!(*mmap_rings.ptr_at::<u32>(p.cq_off.tail), 0);
-            assert_eq!(
-                *mmap_rings.ptr_at::<u32>(p.cq_off.ring_mask),
-                p.cq_entries - 1
-            );
-            assert_eq!(*mmap_rings.ptr_at::<u32>(p.cq_off.overflow), 0);
-        }
-
-        let cq = unsafe { CompletionQueue::new(p, &mmap_rings) };
-
-        Ok(Self {
-            fd,
-            mmap: mmap_rings,
-            flags: p.flags,
-            features: p.features,
-            sq,
-            cq,
-        })
+        Ok(Self { fd, mmap, flags: p.flags, features: p.features, sq, cq })
     }
 
     /// Returns a reference to a vacant SQE, or an error if the submission
@@ -425,8 +410,10 @@ impl SubmissionQueue {
     }
 
     // man 7 io_uring:
-    // - You add SQEs to the tail of the SQ. The kernel reads SQEs off the head
-    //   of the queue.
+    // - "You add SQEs to the tail of the SQ. The kernel reads SQEs off the head
+    //   of the queue."
+    // Mmap is passed is mutable, because Atomics are generated from mutable
+    // ptrs, even though in this case we are not actually mutating anything.
     unsafe fn read_head(&self, mmap: &mut RwMmap) -> u32 {
         mmap.atomic_u32_at(self.off.head).load(Ordering::Acquire)
     }
@@ -437,7 +424,7 @@ impl SubmissionQueue {
     }
 
     // This method helped me catch a bug. I do not care if it is shallow.
-    unsafe fn read_tail(&self, mmap: &mut RwMmap) -> u32 {
+    unsafe fn read_tail(&self, mmap: &RwMmap) -> u32 {
         *mmap.ptr_at::<u32>(self.off.tail)
     }
 
@@ -648,7 +635,7 @@ mod err {
         UnexpectedErrno(rustix::io::Errno),
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, Eq, PartialEq)]
     pub enum Enter {
         /// The kernel was unable to allocate memory or ran out of resources
         /// for the request. The application should waitufor some
@@ -768,18 +755,17 @@ mod tests {
         assert_eq!(ring.sq.sqe_head, 0);
         assert_eq!(ring.sq.sqe_tail, 1);
         unsafe {
-            assert_eq!(*(ring.sq.read_tail(&mut ring.mmap)), 0);
+            assert_eq!(ring.sq.read_tail(&mut ring.mmap), 0);
             assert_eq!(ring.cq.read_head(&mut ring.mmap), 0);
+            assert_eq!(ring.sq_ready(), 1);
+            assert_eq!(ring.cq_ready(), 0);
         }
 
+        unsafe {
+            assert_eq!(ring.submit(), Ok(1));
+        }
+        assert_eq!(ring.sq.sqe_head, 1);
         /*
-        try testing.expectEqual(@as(u32, 0), ring.sq.sqe_head);
-        try testing.expectEqual(@as(u32, 1), ring.sq.sqe_tail);
-        try testing.expectEqual(@as(u32, 0), ring.sq.tail.*);
-        try testing.expectEqual(@as(u32, 0), ring.cq.head.*);
-        try testing.expectEqual(@as(u32, 1), ring.sq_ready());
-        try testing.expectEqual(@as(u32, 0), ring.cq_ready());
-
         try testing.expectEqual(@as(u32, 1), try ring.submit());
         try testing.expectEqual(@as(u32, 1), ring.sq.sqe_head);
         try testing.expectEqual(@as(u32, 1), ring.sq.sqe_tail);

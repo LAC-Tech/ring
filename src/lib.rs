@@ -677,6 +677,31 @@ mod err {
     pub enum GetSqe {
         SubmissionQueueFull,
     }
+
+    #[derive(Debug)]
+    pub enum Registration {
+        /// One or more fds in the array are invalid, or the kernel does not
+        /// support sparse sets:
+        FileDescriptorInvalid,
+        FilesAlreadyRegistered,
+        FilesEmpty,
+        /// Adding `nr_args` file references would exceed the maximum allowed
+        /// number of files the user is allowed to have according to
+        /// the per-user RLIMIT_NOFILE resource limit and
+        /// the CAP_SYS_RESOURCE capability is not set, or `nr_args` exceeds
+        /// the maximum allowed for a fixed file set (older kernels
+        /// have a limit of 1024 files vs 64K files):
+        UserFdQuotaExceeded,
+        /// Insufficient kernel resources, or the caller had a non-zero
+        /// RLIMIT_MEMLOCK soft resource limit but tried to lock more
+        /// memory than the limit permitted (not enforced
+        /// when the process is privileged with CAP_IPC_LOCK):
+        SystemResources,
+        // Attempt to register files on a ring already registering files or
+        // being torn down:
+        RingShuttingDownOrAlreadyRegisteringFiles,
+        UnexpectedErrno(rustix::io::Errno),
+    }
 }
 
 #[cfg(test)]

@@ -121,7 +121,7 @@ impl IoUring {
         )
         .map_err(UnexpectedErrno)?;
 
-        let sq_mask: u32 = unsafe { *mmap.ptr_at(p.sq_off.ring_mask) };
+        let sq_mask = unsafe { mmap.u32_at(p.sq_off.ring_mask) };
         let sq = SubmissionQueue::new(&p, fd.as_fd(), sq_mask)
             .map_err(UnexpectedErrno)?;
         let mut cq = unsafe { CompletionQueue::new(&p, &mmap) };
@@ -132,21 +132,18 @@ impl IoUring {
         assert_eq!(sq.mask, p.sq_entries - 1);
         // Allow flags.* to be non-zero, since the kernel may set
         // IORING_SQ_NEED_WAKEUP at any time.
-        assert_eq!(unsafe { *mmap.ptr_at::<u32>(p.sq_off.dropped) }, 0);
+        assert_eq!(unsafe { mmap.u32_at(p.sq_off.dropped) }, 0);
         assert_eq!(sq.sqe_head, 0);
         assert_eq!(sq.sqe_tail, 0);
 
         assert_eq!(unsafe { cq.read_head(&mut mmap) }, 0);
         assert_eq!(unsafe { cq.read_tail(&mut mmap) }, 0);
         assert_eq!(cq.mask, p.cq_entries - 1);
-        assert_eq!(unsafe { *mmap.ptr_at::<u32>(p.cq_off.overflow) }, 0);
+        assert_eq!(unsafe { mmap.u32_at(p.cq_off.overflow) }, 0);
 
         // We expect the kernel copies p.sq_entries to the u32 pointed to by
         // p.sq_off.ring_entries, see https://github.com/torvalds/linux/blob/v5.8/fs/io_uring.c#L7843-L7844.
-        assert_eq!(
-            unsafe { *mmap.ptr_at::<u32>(p.sq_off.ring_entries) },
-            p.sq_entries
-        );
+        assert_eq!(unsafe { mmap.u32_at(p.sq_off.ring_entries) }, p.sq_entries);
 
         Ok(Self { fd, mmap, flags: p.flags, features: p.features, sq, cq })
     }
@@ -434,7 +431,7 @@ impl SubmissionQueue {
 
     // This method helped me catch a bug. I do not care if it is shallow.
     unsafe fn read_tail(&self, mmap: &RwMmap) -> u32 {
-        *mmap.ptr_at::<u32>(self.off.tail)
+        mmap.u32_at(self.off.tail)
     }
 
     unsafe fn get_sqe(
@@ -503,14 +500,14 @@ impl CompletionQueue {
     unsafe fn new(p: &io_uring_params, mmap: &RwMmap) -> Self {
         Self {
             off: p.cq_off,
-            mask: *mmap.ptr_at(p.cq_off.ring_mask),
+            mask: mmap.u32_at(p.cq_off.ring_mask),
 
             entries: p.cq_entries,
         }
     }
 
     unsafe fn read_head(&mut self, mmap: &mut RwMmap) -> u32 {
-        *mmap.ptr_at::<u32>(self.off.head)
+        mmap.u32_at(self.off.head)
     }
 
     unsafe fn read_tail(&mut self, mmap: &RwMmap) -> u32 {
@@ -535,7 +532,7 @@ impl CompletionQueue {
     ) -> u32 {
         let ready = self.ready(mmap);
         let count = cmp::min(cqes.len() as u32, ready);
-        let head = *mmap.ptr_at::<u32>(self.off.head) & self.mask;
+        let head = mmap.u32_at(self.off.head) & self.mask;
 
         // before wrapping
         let n = cmp::min(self.entries - head, count) as usize;
@@ -602,6 +599,11 @@ impl Drop for RwMmap {
 impl RwMmap {
     unsafe fn ptr_at<T>(&self, byte_offset: u32) -> *const T {
         (self.ptr as *const u8).add(byte_offset as usize) as *const T
+    }
+
+    // just avoids a bit of line noise all the times I do this
+    unsafe fn u32_at(&self, byte_offset: u32) -> u32 {
+        *self.ptr_at(byte_offset)
     }
 
     unsafe fn mut_ptr_at<T>(&mut self, byte_offset: u32) -> *mut T {

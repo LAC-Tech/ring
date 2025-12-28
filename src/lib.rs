@@ -688,8 +688,8 @@ mod tests {
         io::ReadWriteFlags,
         // TODO: the only place we use these constants, is in these tests?
         io_uring::{
-            io_uring_ptr, ioprio_union, IoringOp, IoringSqeFlags,
-            IORING_OFF_CQ_RING, IORING_OFF_SQES,
+            io_uring_ptr, ioprio_union, IoringCqeFlags, IoringOp,
+            IoringSqeFlags, IORING_OFF_CQ_RING, IORING_OFF_SQES,
         },
     };
 
@@ -762,26 +762,21 @@ mod tests {
             assert_eq!(ring.cq_ready(), 0);
         }
 
-        unsafe {
-            assert_eq!(ring.submit(), Ok(1));
-        }
+        assert_eq!(unsafe { ring.submit() }, Ok(1));
         assert_eq!(ring.sq.sqe_head, 1);
+        assert_eq!(ring.sq.sqe_tail, 1);
+        assert_eq!(unsafe { ring.sq.read_tail(&mut ring.mmap) }, 1);
+        assert_eq!(unsafe { ring.cq.read_head(&mut ring.mmap) }, 1);
+        assert_eq!(unsafe { ring.sq_ready() }, 0);
+
+        let cqe = unsafe { ring.copy_cqe().unwrap() };
+        assert_eq!(cqe.user_data.u64_(), 0xaaaaaaaa);
+        assert_eq!(cqe.res, 0);
+        assert_eq!(cqe.flags, IoringCqeFlags::empty());
+        assert_eq!(unsafe { ring.cq.read_head(&mut ring.mmap) }, 1);
+        assert_eq!(unsafe { ring.cq_ready() }, 0);
+
         /*
-        try testing.expectEqual(@as(u32, 1), try ring.submit());
-        try testing.expectEqual(@as(u32, 1), ring.sq.sqe_head);
-        try testing.expectEqual(@as(u32, 1), ring.sq.sqe_tail);
-        try testing.expectEqual(@as(u32, 1), ring.sq.tail.*);
-        try testing.expectEqual(@as(u32, 0), ring.cq.head.*);
-        try testing.expectEqual(@as(u32, 0), ring.sq_ready());
-
-        try testing.expectEqual(linux.io_uring_cqe{
-            .user_data = 0xaaaaaaaa,
-            .res = 0,
-            .flags = 0,
-        }, try ring.copy_cqe());
-        try testing.expectEqual(@as(u32, 1), ring.cq.head.*);
-        try testing.expectEqual(@as(u32, 0), ring.cq_ready());
-
         const sqe_barrier = try ring.nop(0xbbbbbbbb);
         sqe_barrier.flags |= linux.IOSQE_IO_DRAIN;
         try testing.expectEqual(@as(u32, 1), try ring.submit());

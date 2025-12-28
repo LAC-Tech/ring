@@ -143,7 +143,7 @@ impl IoUring {
         assert_eq!(unsafe { cq.read_head(&mut mmap) }, 0);
         assert_eq!(unsafe { cq.read_tail(&mut mmap) }, 0);
         assert_eq!(cq.mask, p.cq_entries - 1);
-        assert_eq!(unsafe { *mmap.ptr_at::<u32>(p.cq_off.overflow) }, 1);
+        assert_eq!(unsafe { *mmap.ptr_at::<u32>(p.cq_off.overflow) }, 0);
 
         // We expect the kernel copies p.sq_entries to the u32 pointed to by
         // p.sq_off.ring_entries, see https://github.com/torvalds/linux/blob/v5.8/fs/io_uring.c#L7843-L7844.

@@ -783,20 +783,9 @@ mod tests {
         assert_eq!(cqe.user_data.u64_(), 0xbbbbbbbb);
         assert_eq!(cqe.res, 0);
         assert_eq!(cqe.flags, IoringCqeFlags::empty());
-
-        /*
-        const sqe_barrier = try ring.nop(0xbbbbbbbb);
-        sqe_barrier.flags |= linux.IOSQE_IO_DRAIN;
-        try testing.expectEqual(@as(u32, 1), try ring.submit());
-        try testing.expectEqual(linux.io_uring_cqe{
-            .user_data = 0xbbbbbbbb,
-            .res = 0,
-            .flags = 0,
-        }, try ring.copy_cqe());
-        try testing.expectEqual(@as(u32, 2), ring.sq.sqe_head);
-        try testing.expectEqual(@as(u32, 2), ring.sq.sqe_tail);
-        try testing.expectEqual(@as(u32, 2), ring.sq.tail.*);
-        try testing.expectEqual(@as(u32, 2), ring.cq.head.*);
-        */
+        assert_eq!(ring.sq.sqe_head, 2);
+        assert_eq!(ring.sq.sqe_tail, 2);
+        assert_eq!(unsafe { ring.sq.read_tail(&mut ring.mmap) }, 2);
+        assert_eq!(unsafe { ring.cq.read_head(&mut ring.mmap) }, 2);
     }
 }

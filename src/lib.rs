@@ -16,9 +16,9 @@ use rustix::fd::{AsFd, BorrowedFd, OwnedFd};
 use rustix::io;
 use rustix::io_uring::{
     io_cqring_offsets, io_sqring_offsets, io_uring_cqe, io_uring_enter,
-    io_uring_params, io_uring_setup, io_uring_sqe, IoringEnterFlags,
-    IoringFeatureFlags, IoringSetupFlags, IoringSqFlags, IORING_OFF_SQES,
-    IORING_OFF_SQ_RING,
+    io_uring_params, io_uring_register, io_uring_setup, io_uring_sqe,
+    IoringEnterFlags, IoringFeatureFlags, IoringSetupFlags, IoringSqFlags,
+    IORING_OFF_SQES, IORING_OFF_SQ_RING,
 };
 
 use rustix::mm;
@@ -679,7 +679,7 @@ mod err {
     }
 
     #[derive(Debug)]
-    pub enum Registration {
+    pub enum Register {
         /// One or more fds in the array are invalid, or the kernel does not
         /// support sparse sets:
         FileDescriptorInvalid,
@@ -700,6 +700,12 @@ mod err {
         // Attempt to register files on a ring already registering files or
         // being torn down:
         RingShuttingDownOrAlreadyRegisteringFiles,
+        UnexpectedErrno(rustix::io::Errno),
+    }
+
+    #[derive(Debug)]
+    pub enum RegisterBufRing {
+        ArgumentsInvalid,
         UnexpectedErrno(rustix::io::Errno),
     }
 }

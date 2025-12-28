@@ -423,15 +423,14 @@ impl SubmissionQueue {
     // man 7 io_uring:
     // - "You add SQEs to the tail of the SQ. The kernel reads SQEs off the head
     //   of the queue."
-    // Mmap is passed is mutable, because Atomics are generated from mutable
-    // ptrs, even though in this case we are not actually mutating anything.
-    unsafe fn read_head(&self, mmap: &mut RwMmap) -> u32 {
-        mmap.atomic_u32_at(self.off.head).load(Ordering::Acquire)
+    unsafe fn read_head(&self, mmap: &RwMmap) -> u32 {
+        mmap.read_u32_atomically_at(self.off.head, Ordering::Acquire)
     }
 
-    unsafe fn read_flags(&self, mmap: &mut RwMmap) -> IoringSqFlags {
-        let raw = mmap.atomic_u32_at(self.off.flags).load(Ordering::Relaxed);
-        IoringSqFlags::from_bits_retain(raw)
+    unsafe fn read_flags(&self, mmap: &RwMmap) -> IoringSqFlags {
+        let bits =
+            mmap.read_u32_atomically_at(self.off.flags, Ordering::Relaxed);
+        IoringSqFlags::from_bits_retain(bits)
     }
 
     // This method helped me catch a bug. I do not care if it is shallow.
@@ -515,8 +514,8 @@ impl CompletionQueue {
         *mmap.ptr_at::<u32>(self.off.head)
     }
 
-    unsafe fn read_tail(&mut self, mmap: &mut RwMmap) -> u32 {
-        mmap.atomic_u32_at(self.off.tail).load(Ordering::Acquire)
+    unsafe fn read_tail(&mut self, mmap: &RwMmap) -> u32 {
+        mmap.read_u32_atomically_at(self.off.tail, Ordering::Acquire)
     }
 
     unsafe fn ready(&mut self, mmap: &mut RwMmap) -> u32 {
@@ -610,8 +609,15 @@ impl RwMmap {
         (self.ptr as *mut u8).add(byte_offset as usize) as *mut T
     }
 
-    // self is mut beause Atomics need a mutable pointer
-    // TODO: is this correct?
+    unsafe fn read_u32_atomically_at(
+        &self,
+        byte_offset: u32,
+        ordering: Ordering,
+    ) -> u32 {
+        let ptr = (self.ptr as *mut u32).add(byte_offset as usize);
+        AtomicU32::from_ptr(ptr).load(ordering)
+    }
+    /// Use this when you need to do atomic writes
     unsafe fn atomic_u32_at(&mut self, byte_offset: u32) -> &AtomicU32 {
         AtomicU32::from_ptr(self.mut_ptr_at(byte_offset))
     }

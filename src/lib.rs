@@ -749,7 +749,7 @@ mod tests {
     }
 
     // It's just a u16 in the C struct
-    fn ioprio_to_u32(i: ioprio_union) -> u16 {
+    fn ioprio_to_u16(i: ioprio_union) -> u16 {
         // 100% safe, 'cause Stone Cold said so
         unsafe { mem::transmute::<_, u16>(i) }
     }
@@ -765,8 +765,8 @@ mod tests {
         assert_eq!(sqe.opcode, IoringOp::Nop);
         assert_eq!(sqe.flags, IoringSqeFlags::empty());
         assert_eq!(
-            ioprio_to_u32(sqe.ioprio),
-            ioprio_to_u32(ioprio_union::default())
+            ioprio_to_u16(sqe.ioprio),
+            ioprio_to_u16(ioprio_union::default())
         );
         assert_eq!(sqe.fd, 0);
         assert_eq!(unsafe { sqe.off_or_addr2.off }, 0);

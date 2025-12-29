@@ -475,11 +475,6 @@ impl SubmissionQueue {
         self.ready(mmap)
     }
 
-    /// Returns the number of flushed and unflushed SQEs pending in the
-    /// submission queue. In other words, this is the number of SQEs in the
-    /// submission queue, i.e. its length. These are SQEs that the kernel is
-    /// yet to consume. Matches the implementation of io_uring_sq_ready in
-    /// liburing.
     unsafe fn ready(&mut self, mmap: &mut RwMmap) -> u32 {
         // Always use the shared ring state (i.e. not self.sqe_head) to
         // avoid going out of sync, see https://github.com/axboe/liburing/issues/92.

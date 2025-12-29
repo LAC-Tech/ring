@@ -150,7 +150,9 @@ impl IoUring {
     /// Returns a reference to a vacant SQE, or an error if the submission
     /// queue is full. We follow the implementation (and atomics) of
     /// liburing's `io_uring_get_sqe()`, EXCEPT that the fields are zeroed out.
-    pub unsafe fn get_sqe(&mut self) -> Result<*mut io_uring_sqe, err::GetSqe> {
+    pub unsafe fn get_sqe_zeroed(
+        &mut self,
+    ) -> Result<*mut io_uring_sqe, err::GetSqe> {
         self.sq.get_sqe(&mut self.mmap).map(|sqe| {
             *sqe = io_uring_sqe::default();
             sqe
@@ -162,7 +164,7 @@ impl IoUring {
     /// liburing's `io_uring_get_sqe()` exactly.
     /// TODO: is it reasonable/possible to make this "safe" and return a
     /// reference?
-    pub unsafe fn get_sqe_unzeroed(
+    pub unsafe fn get_sqe_raw(
         &mut self,
     ) -> Result<*mut io_uring_sqe, err::GetSqe> {
         self.sq.get_sqe(&mut self.mmap)
@@ -347,7 +349,7 @@ impl IoUring {
         &mut self,
         user_data: u64,
     ) -> Result<*mut io_uring_sqe, err::GetSqe> {
-        let sqe = self.get_sqe()?;
+        let sqe = self.get_sqe_zeroed()?;
         (*sqe).opcode = IoringOp::Nop;
         (*sqe).user_data = user_data.into();
         Ok(sqe)
@@ -362,7 +364,7 @@ impl IoUring {
         buffer: &mut [u8],
         offset: u64,
     ) -> Result<*mut io_uring_sqe, err::GetSqe> {
-        let sqe = self.get_sqe()?;
+        let sqe = self.get_sqe_zeroed()?;
         (*sqe).opcode = IoringOp::Read;
         (*sqe).fd = fd;
         (*sqe).addr_or_splice_off_in.addr =

@@ -337,67 +337,54 @@ impl IoUring {
     }
 }
 
-pub trait PrepSqe {
-    /// A no-op is more useful than may appear at first
-    /// glance. For example, you could call `drain_previous_sqes()` on the
-    /// returned SQE, to use the no-op to know when the ring is idle before
-    /// acting on a kill signal.
-    fn nop(&mut self, user_data: u64);
+/// Prepares SQEs to perform various syscalls when they are submitted
+/// These all only set the relevant fields, they do not zero out everything
+// I originally thought about making this a trait, but there's weird semantics
+// with raw pointers I do not want to deal with.
+// And honestly it's six of one, half a dozen of the other in terms of DX
+pub mod prep {
+    use core::ffi::c_void;
+    use rustix::io_uring::{io_uring_ptr, io_uring_sqe, iovec, IoringOp};
 
-    unsafe fn read(
-        &mut self,
+    /// A no-op is more useful than may appear at first glance. For example, you
+    /// could call `drain_previous_sqes()` on the returned SQE, to use the no-op
+    /// to know when the ring is idle before acting on a kill signal.
+    pub unsafe fn nop(sqe: *mut io_uring_sqe, user_data: u64) {
+        (*sqe).opcode = IoringOp::Nop;
+        (*sqe).user_data = user_data.into();
+    }
+
+    pub unsafe fn read(
+        sqe: *mut io_uring_sqe,
         user_data: u64,
         fd: i32,
         buffer: &mut [u8],
         offset: u64,
-    );
+    ) {
+        (*sqe).opcode = IoringOp::Read;
+        (*sqe).fd = fd;
+        (*sqe).addr_or_splice_off_in.addr =
+            io_uring_ptr::new(buffer.as_mut_ptr() as *mut c_void);
+        (*sqe).len.len = buffer.len() as u32;
+        (*sqe).off_or_addr2.off = offset;
+        (*sqe).user_data.u64_ = user_data;
+    }
 
-    unsafe fn readv(
-        &mut self,
+    pub unsafe fn readv(
+        sqe: *mut io_uring_sqe,
         user_data: u64,
         fd: i32,
         // const in libc in zig; they point to mutable buffers
         iovecs: &[iovec],
         offset: u64,
-    );
-}
-
-impl PrepSqe for io_uring_sqe {
-    fn nop(&mut self, user_data: u64) {
-        self.opcode = IoringOp::Nop;
-        self.user_data = user_data.into();
-    }
-
-    unsafe fn read(
-        &mut self,
-        user_data: u64,
-        fd: i32,
-        buffer: &mut [u8],
-        offset: u64,
     ) {
-        self.opcode = IoringOp::Read;
-        self.fd = fd;
-        self.addr_or_splice_off_in.addr =
-            io_uring_ptr::new(buffer.as_mut_ptr() as *mut c_void);
-        self.len.len = buffer.len() as u32;
-        self.off_or_addr2.off = offset;
-        self.user_data.u64_ = user_data;
-    }
-
-    unsafe fn readv(
-        &mut self,
-        user_data: u64,
-        fd: i32,
-        iovecs: &[iovec],
-        offset: u64,
-    ) {
-        self.opcode = IoringOp::Readv;
-        self.fd = fd;
-        self.addr_or_splice_off_in.addr =
+        (*sqe).opcode = IoringOp::Readv;
+        (*sqe).fd = fd;
+        (*sqe).addr_or_splice_off_in.addr =
             io_uring_ptr::new(iovecs.as_ptr() as *mut c_void);
-        self.len.len = iovecs.len() as u32;
-        self.off_or_addr2.off = offset;
-        self.user_data.u64_ = user_data;
+        (*sqe).len.len = iovecs.len() as u32;
+        (*sqe).off_or_addr2.off = offset;
+        (*sqe).user_data.u64_ = user_data;
     }
 }
 
@@ -805,8 +792,11 @@ mod tests {
     fn nop() {
         let mut ring = IoUring::new(1).unwrap();
         //let sqe = unsafe { *ring.nop(0xaaaaaaaa).unwrap() };
-        let sqe = unsafe { ring.get_sqe_zeroed() }.unwrap();
-        unsafe { sqe.prep_nop() };
+        let sqe = unsafe {
+            let sqe = ring.get_sqe().unwrap();
+            prep::nop(sqe, 0xaaaaaaaa);
+            *sqe
+        };
 
         //
         // Asserting sqe, field by field, as it lacks `Debug`
@@ -862,7 +852,8 @@ mod tests {
         assert_eq!(unsafe { ring.cq.read_head(&mut ring.mmap) }, 1);
         assert_eq!(unsafe { ring.cq_ready() }, 0);
 
-        let sqe_barrier = unsafe { ring.nop(0xbbbbbbbb).unwrap() };
+        let sqe_barrier = unsafe { ring.get_sqe().unwrap() };
+        unsafe { prep::nop(sqe_barrier, 0xbbbbbbbb) };
         unsafe { (*sqe_barrier).flags.set(IoringSqeFlags::IO_DRAIN, true) };
         assert_eq!(unsafe { ring.submit() }, Ok(1));
         let cqe = unsafe { ring.copy_cqe().unwrap() };

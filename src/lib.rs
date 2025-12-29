@@ -124,7 +124,7 @@ impl IoUring {
         let sq_mask = unsafe { mmap.u32_at(p.sq_off.ring_mask) };
         let sq = SubmissionQueue::new(&p, fd.as_fd(), sq_mask)
             .map_err(UnexpectedErrno)?;
-        let mut cq = unsafe { CompletionQueue::new(&p, &mmap) };
+        let cq = unsafe { CompletionQueue::new(&p, &mmap) };
 
         // Check that our starting state is as we expect.
         assert_eq!(unsafe { sq.read_head(&mut mmap) }, 0);
@@ -240,9 +240,7 @@ impl IoUring {
             return true;
         }
 
-        let sq_flags = self.sq.read_flags(&mut self.mmap);
-
-        if sq_flags.contains(IoringSqFlags::NEED_WAKEUP) {
+        if self.sq.flag_contains(&self.mmap, IoringSqFlags::NEED_WAKEUP) {
             flags.set(IoringEnterFlags::SQ_WAKEUP, true);
             return true;
         }
@@ -309,7 +307,7 @@ impl IoUring {
 
     /// Matches the implementation of cq_ring_needs_flush() in liburing.
     pub unsafe fn cq_ring_needs_flush(&mut self) -> bool {
-        self.sq.read_flags(&mut self.mmap).contains(IoringSqFlags::CQ_OVERFLOW)
+        self.sq.flag_contains(&self.mmap, IoringSqFlags::CQ_OVERFLOW)
     }
 
     /// For advanced use cases only that implement custom completion queue
@@ -424,9 +422,10 @@ impl SubmissionQueue {
         mmap.atomic_load_u32_at(self.off.head, Ordering::Acquire)
     }
 
-    unsafe fn read_flags(&self, mmap: &RwMmap) -> IoringSqFlags {
+    unsafe fn flag_contains(&self, mmap: &RwMmap, flag: IoringSqFlags) -> bool {
         let bits = mmap.atomic_load_u32_at(self.off.flags, Ordering::Relaxed);
-        IoringSqFlags::from_bits_retain(bits)
+        let flags = IoringSqFlags::from_bits_retain(bits);
+        flags.contains(flag)
     }
 
     // This method helped me catch a bug. I do not care if it is shallow.
@@ -506,15 +505,15 @@ impl CompletionQueue {
         }
     }
 
-    unsafe fn read_head(&mut self, mmap: &mut RwMmap) -> u32 {
+    unsafe fn read_head(&self, mmap: &RwMmap) -> u32 {
         mmap.u32_at(self.off.head)
     }
 
-    unsafe fn read_tail(&mut self, mmap: &RwMmap) -> u32 {
+    unsafe fn read_tail(&self, mmap: &RwMmap) -> u32 {
         mmap.atomic_load_u32_at(self.off.tail, Ordering::Acquire)
     }
 
-    unsafe fn ready(&mut self, mmap: &mut RwMmap) -> u32 {
+    unsafe fn ready(&mut self, mmap: &RwMmap) -> u32 {
         self.read_tail(mmap).wrapping_sub(self.read_head(mmap))
     }
 

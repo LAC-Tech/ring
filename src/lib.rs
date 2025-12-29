@@ -16,7 +16,7 @@ use rustix::io;
 use rustix::io_uring::{
     io_cqring_offsets, io_sqring_offsets, io_uring_cqe, io_uring_enter,
     io_uring_params, io_uring_ptr, io_uring_register, io_uring_setup,
-    io_uring_sqe, IoringEnterFlags, IoringFeatureFlags, IoringOp,
+    io_uring_sqe, iovec, IoringEnterFlags, IoringFeatureFlags, IoringOp,
     IoringSetupFlags, IoringSqFlags, IORING_OFF_SQES, IORING_OFF_SQ_RING,
 };
 
@@ -370,6 +370,27 @@ impl IoUring {
         (*sqe).addr_or_splice_off_in.addr =
             io_uring_ptr::new(buffer.as_mut_ptr() as *mut c_void);
         (*sqe).len.len = buffer.len() as u32;
+        (*sqe).off_or_addr2.off = offset;
+        (*sqe).user_data.u64_ = user_data;
+        return Ok(sqe);
+    }
+
+    /// Queues (but does not submit) an SQE to perform a `readv(2)`
+    /// Returns a pointer to the SQE.
+    pub unsafe fn readv(
+        &mut self,
+        user_data: u64,
+        fd: i32,
+        // const in libc in zig; they point to mutable buffers
+        iovecs: &[iovec],
+        offset: u64,
+    ) -> Result<*mut io_uring_sqe, err::GetSqe> {
+        let sqe = self.get_sqe_zeroed()?;
+        (*sqe).opcode = IoringOp::Readv;
+        (*sqe).fd = fd;
+        (*sqe).addr_or_splice_off_in.addr =
+            io_uring_ptr::new(iovecs.as_ptr() as *mut c_void);
+        (*sqe).len.len = iovecs.len() as u32;
         (*sqe).off_or_addr2.off = offset;
         (*sqe).user_data.u64_ = user_data;
         return Ok(sqe);

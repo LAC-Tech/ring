@@ -112,7 +112,7 @@ impl IoUring {
                 + p.cq_entries * mem::size_of::<io_uring_cqe>() as u32,
         ) as usize;
 
-        let mut mmap = RwMmap::new(
+        let mmap = RwMmap::new(
             size,
             fd.as_fd(),
             mm::MapFlags::SHARED | mm::MapFlags::POPULATE,
@@ -121,13 +121,13 @@ impl IoUring {
         .map_err(UnexpectedErrno)?;
 
         let sq_mask = unsafe { mmap.u32_at(p.sq_off.ring_mask) };
-        let sq = SubmissionQueue::new(&p, fd.as_fd(), sq_mask)
+        let sq = SubmissionQueue::new(p, fd.as_fd(), sq_mask)
             .map_err(UnexpectedErrno)?;
         let cq = unsafe { CompletionQueue::new(&p, &mmap) };
 
         // Check that our starting state is as we expect.
-        assert_eq!(unsafe { sq.read_head(&mut mmap) }, 0);
-        assert_eq!(unsafe { sq.read_tail(&mut mmap) }, 0);
+        assert_eq!(unsafe { sq.read_head(&mmap) }, 0);
+        assert_eq!(unsafe { sq.read_tail(&mmap) }, 0);
         assert_eq!(sq.mask, p.sq_entries - 1);
         // Allow flags.* to be non-zero, since the kernel may set
         // IORING_SQ_NEED_WAKEUP at any time.
@@ -135,8 +135,8 @@ impl IoUring {
         assert_eq!(sq.sqe_head, 0);
         assert_eq!(sq.sqe_tail, 0);
 
-        assert_eq!(unsafe { cq.read_head(&mut mmap) }, 0);
-        assert_eq!(unsafe { cq.read_tail(&mut mmap) }, 0);
+        assert_eq!(unsafe { cq.read_head(&mmap) }, 0);
+        assert_eq!(unsafe { cq.read_tail(&mmap) }, 0);
         assert_eq!(cq.mask, p.cq_entries - 1);
         assert_eq!(unsafe { mmap.u32_at(p.cq_off.overflow) }, 0);
 
@@ -151,7 +151,7 @@ impl IoUring {
     /// queue is full. We follow the implementation (and atomics) of
     /// liburing's `io_uring_get_sqe()`, EXCEPT that the fields are zeroed out.
     pub unsafe fn get_sqe(&mut self) -> Result<*mut io_uring_sqe, err::GetSqe> {
-        let sqe = self.sq.get_sqe(&mut self.mmap)?;
+        let sqe = self.sq.get_sqe(&self.mmap)?;
         *sqe = io_uring_sqe::default();
         Ok(sqe)
     }
@@ -164,7 +164,7 @@ impl IoUring {
     pub unsafe fn get_sqe_raw(
         &mut self,
     ) -> Result<*mut io_uring_sqe, err::GetSqe> {
-        self.sq.get_sqe(&mut self.mmap)
+        self.sq.get_sqe(&self.mmap)
     }
 
     /// Submits the SQEs acquired via get_sqe() to the kernel. You can call this
@@ -270,7 +270,7 @@ impl IoUring {
     /// These are CQEs that the application is yet to consume.
     /// Matches the implementation of io_uring_cq_ready in liburing.
     pub unsafe fn cq_ready(&mut self) -> u32 {
-        self.cq.ready(&mut self.mmap)
+        self.cq.ready(&self.mmap)
     }
 
     /// Copies as many CQEs as are ready, and that can fit into the destination
@@ -426,7 +426,7 @@ impl SubmissionQueue {
             (p.sq_entries * mem::size_of::<io_uring_sqe>() as u32) as usize;
 
         let mmap_entries = RwMmap::new(
-            size_sqes.try_into().unwrap(),
+            size_sqes,
             fd,
             mm::MapFlags::SHARED | mm::MapFlags::POPULATE,
             IORING_OFF_SQES,

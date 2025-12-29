@@ -150,13 +150,10 @@ impl IoUring {
     /// Returns a reference to a vacant SQE, or an error if the submission
     /// queue is full. We follow the implementation (and atomics) of
     /// liburing's `io_uring_get_sqe()`, EXCEPT that the fields are zeroed out.
-    pub unsafe fn get_sqe_zeroed(
-        &mut self,
-    ) -> Result<*mut io_uring_sqe, err::GetSqe> {
-        self.sq.get_sqe(&mut self.mmap).map(|sqe| {
-            *sqe = io_uring_sqe::default();
-            sqe
-        })
+    pub unsafe fn get_sqe(&mut self) -> Result<*mut io_uring_sqe, err::GetSqe> {
+        let sqe = self.sq.get_sqe(&mut self.mmap)?;
+        *sqe = io_uring_sqe::default();
+        Ok(sqe)
     }
 
     /// Returns a reference to a vacant SQE, or an error if the submission

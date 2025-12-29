@@ -338,64 +338,72 @@ impl IoUring {
     pub unsafe fn cq_advance(&mut self, count: u32) {
         self.cq.advance(&mut self.mmap, count);
     }
+}
 
-    /// Queues (but does not submit) an SQE to perform a no-op.
-    /// Returns a pointer to the SQE so that you can further modify the SQE for
-    /// advanced use cases. A no-op is more useful than may appear at first
+pub trait PrepSqe {
+    /// A no-op is more useful than may appear at first
     /// glance. For example, you could call `drain_previous_sqes()` on the
     /// returned SQE, to use the no-op to know when the ring is idle before
     /// acting on a kill signal.
-    pub unsafe fn nop(
-        &mut self,
-        user_data: u64,
-    ) -> Result<*mut io_uring_sqe, err::GetSqe> {
-        let sqe = self.get_sqe_zeroed()?;
-        (*sqe).opcode = IoringOp::Nop;
-        (*sqe).user_data = user_data.into();
-        Ok(sqe)
-    }
+    fn nop(&mut self, user_data: u64);
 
-    /// Queues (but does not submit) an SQE to perform a `read(2)`
-    /// Returns a pointer to the SQE.
-    pub unsafe fn read(
+    unsafe fn read(
         &mut self,
         user_data: u64,
         fd: i32,
         buffer: &mut [u8],
         offset: u64,
-    ) -> Result<*mut io_uring_sqe, err::GetSqe> {
-        let sqe = self.get_sqe_zeroed()?;
-        (*sqe).opcode = IoringOp::Read;
-        (*sqe).fd = fd;
-        (*sqe).addr_or_splice_off_in.addr =
-            io_uring_ptr::new(buffer.as_mut_ptr() as *mut c_void);
-        (*sqe).len.len = buffer.len() as u32;
-        (*sqe).off_or_addr2.off = offset;
-        (*sqe).user_data.u64_ = user_data;
-        return Ok(sqe);
-    }
+    );
 
-    /// Queues (but does not submit) an SQE to perform a `readv(2)`
-    /// Returns a pointer to the SQE.
-    pub unsafe fn readv(
+    unsafe fn readv(
         &mut self,
         user_data: u64,
         fd: i32,
         // const in libc in zig; they point to mutable buffers
         iovecs: &[iovec],
         offset: u64,
-    ) -> Result<*mut io_uring_sqe, err::GetSqe> {
-        let sqe = self.get_sqe_zeroed()?;
-        (*sqe).opcode = IoringOp::Readv;
-        (*sqe).fd = fd;
-        (*sqe).addr_or_splice_off_in.addr =
+    );
+}
+
+impl PrepSqe for io_uring_sqe {
+    fn nop(&mut self, user_data: u64) {
+        self.opcode = IoringOp::Nop;
+        self.user_data = user_data.into();
+    }
+
+    unsafe fn read(
+        &mut self,
+        user_data: u64,
+        fd: i32,
+        buffer: &mut [u8],
+        offset: u64,
+    ) {
+        self.opcode = IoringOp::Read;
+        self.fd = fd;
+        self.addr_or_splice_off_in.addr =
+            io_uring_ptr::new(buffer.as_mut_ptr() as *mut c_void);
+        self.len.len = buffer.len() as u32;
+        self.off_or_addr2.off = offset;
+        self.user_data.u64_ = user_data;
+    }
+
+    unsafe fn readv(
+        &mut self,
+        user_data: u64,
+        fd: i32,
+        iovecs: &[iovec],
+        offset: u64,
+    ) {
+        self.opcode = IoringOp::Readv;
+        self.fd = fd;
+        self.addr_or_splice_off_in.addr =
             io_uring_ptr::new(iovecs.as_ptr() as *mut c_void);
-        (*sqe).len.len = iovecs.len() as u32;
-        (*sqe).off_or_addr2.off = offset;
-        (*sqe).user_data.u64_ = user_data;
-        return Ok(sqe);
+        self.len.len = iovecs.len() as u32;
+        self.off_or_addr2.off = offset;
+        self.user_data.u64_ = user_data;
     }
 }
+
 // Unlike the Zig version, we do not store the mmap; as it is used by the
 // CompletionQueue as well.
 // We do store mmap_entries however, as it is exclusively used by this
@@ -799,7 +807,9 @@ mod tests {
     #[test]
     fn nop() {
         let mut ring = IoUring::new(1).unwrap();
-        let sqe = unsafe { *ring.nop(0xaaaaaaaa).unwrap() };
+        //let sqe = unsafe { *ring.nop(0xaaaaaaaa).unwrap() };
+        let sqe = unsafe { ring.get_sqe_zeroed() }.unwrap();
+        unsafe { sqe.prep_nop() };
 
         //
         // Asserting sqe, field by field, as it lacks `Debug`

@@ -6,7 +6,6 @@
 // I need to CONSTATLY cast things between usize and u32
 const _: () = assert!(usize::BITS >= 32);
 
-pub mod prep;
 pub use rustix;
 
 use core::ffi::c_void;
@@ -16,9 +15,9 @@ use rustix::fd::{AsFd, BorrowedFd, OwnedFd};
 use rustix::io;
 use rustix::io_uring::{
     io_cqring_offsets, io_sqring_offsets, io_uring_cqe, io_uring_enter,
-    io_uring_params, io_uring_register, io_uring_setup, io_uring_sqe,
-    IoringEnterFlags, IoringFeatureFlags, IoringSetupFlags, IoringSqFlags,
-    IORING_OFF_SQES, IORING_OFF_SQ_RING,
+    io_uring_params, io_uring_ptr, io_uring_register, io_uring_setup,
+    io_uring_sqe, IoringEnterFlags, IoringFeatureFlags, IoringOp,
+    IoringSetupFlags, IoringSqFlags, IORING_OFF_SQES, IORING_OFF_SQ_RING,
 };
 
 use rustix::mm;
@@ -150,10 +149,22 @@ impl IoUring {
 
     /// Returns a reference to a vacant SQE, or an error if the submission
     /// queue is full. We follow the implementation (and atomics) of
+    /// liburing's `io_uring_get_sqe()`, EXCEPT that the fields are zeroed out.
+    pub unsafe fn get_sqe(&mut self) -> Result<*mut io_uring_sqe, err::GetSqe> {
+        self.sq.get_sqe(&mut self.mmap).map(|sqe| {
+            *sqe = io_uring_sqe::default();
+            sqe
+        })
+    }
+
+    /// Returns a reference to a vacant SQE, or an error if the submission
+    /// queue is full. We follow the implementation (and atomics) of
     /// liburing's `io_uring_get_sqe()` exactly.
     /// TODO: is it reasonable/possible to make this "safe" and return a
     /// reference?
-    pub unsafe fn get_sqe(&mut self) -> Result<*mut io_uring_sqe, err::GetSqe> {
+    pub unsafe fn get_sqe_unzeroed(
+        &mut self,
+    ) -> Result<*mut io_uring_sqe, err::GetSqe> {
         self.sq.get_sqe(&mut self.mmap)
     }
 
@@ -337,7 +348,7 @@ impl IoUring {
         user_data: u64,
     ) -> Result<*mut io_uring_sqe, err::GetSqe> {
         let sqe = self.get_sqe()?;
-        prep::nop(sqe);
+        (*sqe).opcode = IoringOp::Nop;
         (*sqe).user_data = user_data.into();
         Ok(sqe)
     }
@@ -352,7 +363,12 @@ impl IoUring {
         offset: u64,
     ) -> Result<*mut io_uring_sqe, err::GetSqe> {
         let sqe = self.get_sqe()?;
-        prep::read(sqe, fd, buffer, offset);
+        (*sqe).opcode = IoringOp::Read;
+        (*sqe).fd = fd;
+        (*sqe).addr_or_splice_off_in.addr =
+            io_uring_ptr::new(buffer.as_mut_ptr() as *mut c_void);
+        (*sqe).len.len = buffer.len() as u32;
+        (*sqe).off_or_addr2.off = offset;
         (*sqe).user_data.u64_ = user_data;
         return Ok(sqe);
     }
@@ -435,7 +451,7 @@ impl SubmissionQueue {
 
     unsafe fn get_sqe(
         &mut self,
-        mmap: &mut RwMmap,
+        mmap: &RwMmap,
     ) -> Result<*mut io_uring_sqe, err::GetSqe> {
         let head = self.read_head(mmap);
         // Remember that these head and tail offsets wrap around every four

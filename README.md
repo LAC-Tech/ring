@@ -8,8 +8,8 @@
 | ---------------------------------------------- | ------ |
 | structs/offsets/entries                        | ✅     |
 | nop                                            | ✅     |
-| readv                                          | ✅     |
-| writev/fsync/readv                             | ❌     |
+| readv                                          | ❌     |
+| writev/fsync/readv                             | ✅     |
 | write/read                                     | ❌     |
 | splice/read                                    | ❌     |
 | write_fixed/read_fixed                         | ❌     |

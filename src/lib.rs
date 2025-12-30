@@ -463,8 +463,6 @@ impl SubmissionQueue {
             mm::MapFlags::SHARED | mm::MapFlags::POPULATE,
             IORING_OFF_SQES,
         )?;
-        // TODO: usless assert?
-        assert_eq!(mmap_entries.len, size_sqes);
 
         let sq = Self {
             entries: p.sq_entries,

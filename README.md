@@ -1,5 +1,49 @@
 ⚠️ **WIP, not all tests have been implemented yet** ⚠️
 
+| IoUring.zig test                               | Passes |
+| ---------------------------------------------- | ------ |
+| structs/offsets/entries                        | ✅     |
+| nop                                            | ✅     |
+| readv                                          | ✅     |
+| writev/fsync/readv                             | ❌     |
+| write/read                                     | ❌     |
+| splice/read                                    | ❌     |
+| write_fixed/read_fixed                         | ❌     |
+| openat                                         | ❌     |
+| close                                          | ❌     |
+| accept/connect/send/recv                       | ❌     |
+| sendmsg/recvmsg                                | ❌     |
+| timeout (after a relative time)                | ❌     |
+| timeout (after a number of completions)        | ❌     |
+| timeout_remove                                 | ❌     |
+| accept/connect/recv/link_timeout               | ❌     |
+| fallocate                                      | ❌     |
+| statx                                          | ❌     |
+| accept/connect/recv/cancel                     | ❌     |
+| register_files_update                          | ❌     |
+| shutdown                                       | ❌     |
+| renameat                                       | ❌     |
+| unlinkat                                       | ❌     |
+| mkdirat                                        | ❌     |
+| symlinkat                                      | ❌     |
+| linkat                                         | ❌     |
+| provide_buffers: read                          | ❌     |
+| remove_buffers                                 | ❌     |
+| provide_buffers: accept/connect/send/recv      | ❌     |
+| accept multishot                               | ❌     |
+| accept/connect/send_zc/recv                    | ❌     |
+| accept_direct                                  | ❌     |
+| accept_multishot_direct                        | ❌     |
+| socket                                         | ❌     |
+| socket_direct/socket_direct_alloc/close_direct | ❌     |
+| openat_direct/close_direct                     | ❌     |
+| waitid                                         | ❌     |
+| BufferGroup                                    | ❌     |
+| ring mapped buffers recv                       | ❌     |
+| ring mapped buffers multishot recv             | ❌     |
+| copy_cqes with wrapping sq.cqes buffer         | ❌     |
+| bind/listen/connect                            | ❌     |
+
 [docs](https://docs.rs/hringas/latest/hringas/)
 
 [example](/examples/readme.rs)

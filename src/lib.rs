@@ -7,8 +7,6 @@
 //! `std.os`.
 
 #![cfg_attr(not(test), no_std)]
-// I need to CONSTATLY cast things between usize and u32
-const _: () = assert!(usize::BITS >= 32);
 
 mod mmap;
 pub use rustix;
@@ -23,10 +21,30 @@ use rustix::io_uring::{
     io_cqring_offsets, io_sqring_offsets, io_uring_cqe, io_uring_enter,
     io_uring_params, io_uring_ptr, io_uring_setup, io_uring_sqe,
     IoringEnterFlags, IoringFeatureFlags, IoringOp, IoringSetupFlags,
-    IoringSqFlags, IORING_OFF_SQES, IORING_OFF_SQ_RING,
+    IoringSqFlags, IORING_OFF_CQ_RING, IORING_OFF_SQES, IORING_OFF_SQ_RING,
 };
-
 use rustix::mm;
+
+// Sanity check that we can cast from u32 to usize
+const _: () = assert!(usize::BITS >= 32);
+
+// I am constantly using these - makes it a little bit cleaner
+const U32_SIZE: u32 = mem::size_of::<u32>() as u32;
+const CQE_SIZE: u32 = mem::size_of::<io_uring_cqe>() as u32;
+const SQE_SIZE: u32 = mem::size_of::<io_uring_sqe>() as u32;
+
+// A lot of this was done at runtime by IoUring zig, but because this is a 13rd
+// party library we can be more aggressive about preventing compilation
+const _: () = {
+    assert!(mem::size_of::<io_uring_params>() == 120);
+    assert!(U32_SIZE == 4); // rofl why not
+    assert!(SQE_SIZE == 64);
+    assert!(CQE_SIZE == 16);
+
+    assert!(IORING_OFF_SQ_RING == 0);
+    assert!(IORING_OFF_CQ_RING == 0x8000000);
+    assert!(IORING_OFF_SQES == 0x10000000);
+};
 
 #[derive(Debug)]
 pub struct IoUring {
@@ -115,9 +133,8 @@ impl IoUring {
         assert!(p.cq_entries >= p.sq_entries);
 
         let size = cmp::max::<u32>(
-            p.sq_off.array + p.sq_entries * mem::size_of::<u32>() as u32,
-            p.cq_off.cqes
-                + p.cq_entries * mem::size_of::<io_uring_cqe>() as u32,
+            p.sq_off.array + p.sq_entries * U32_SIZE,
+            p.cq_off.cqes + p.cq_entries * CQE_SIZE,
         ) as usize;
 
         let mmap = RwMmap::new(
@@ -537,8 +554,7 @@ impl SubmissionQueue {
          * make it possible for the application to preallocate static
          * linux.io_uring_sqe entries and then replay them when needed."
          */
-        let size_sqes =
-            (p.sq_entries * mem::size_of::<io_uring_sqe>() as u32) as usize;
+        let size_sqes = (p.sq_entries * SQE_SIZE) as usize;
 
         let mmap_entries = RwMmap::new(
             size_sqes,
@@ -842,21 +858,13 @@ mod tests {
         // TODO: the only place we use these constants, is in these tests?
         io_uring::{
             io_uring_ptr, ioprio_union, IoringCqeFlags, IoringOp,
-            IoringSqeFlags, IORING_OFF_CQ_RING, IORING_OFF_SQES,
+            IoringSqeFlags,
         },
     };
     use tempfile::tempdir;
 
     #[test]
-    fn structs_offsets_entries() {
-        assert_eq!(120, mem::size_of::<io_uring_params>());
-        assert_eq!(64, mem::size_of::<io_uring_sqe>());
-        assert_eq!(16, mem::size_of::<io_uring_cqe>());
-
-        assert_eq!(0, IORING_OFF_SQ_RING);
-        assert_eq!(0x8000000, IORING_OFF_CQ_RING);
-        assert_eq!(0x10000000, IORING_OFF_SQES);
-
+    fn entries() {
         assert_eq!(Init::EntriesZero, IoUring::new(0).unwrap_err());
         assert_eq!(Init::EntriesNotPowerOfTwo, IoUring::new(3).unwrap_err());
     }

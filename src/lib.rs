@@ -11,13 +11,13 @@ pub use rustix;
 use core::ffi::c_void;
 use core::sync::atomic::{AtomicU32, Ordering};
 use core::{assert, assert_eq, assert_ne, cmp, mem, ptr};
-use rustix::fd::{AsFd, BorrowedFd, OwnedFd};
+use rustix::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use rustix::io;
 use rustix::io_uring::{
     io_cqring_offsets, io_sqring_offsets, io_uring_cqe, io_uring_enter,
-    io_uring_params, io_uring_setup, io_uring_sqe, IoringEnterFlags,
-    IoringFeatureFlags, IoringSetupFlags, IoringSqFlags, IORING_OFF_SQES,
-    IORING_OFF_SQ_RING,
+    io_uring_params, io_uring_ptr, io_uring_setup, io_uring_sqe, iovec,
+    IoringEnterFlags, IoringFeatureFlags, IoringOp, IoringSetupFlags,
+    IoringSqFlags, IORING_OFF_SQES, IORING_OFF_SQ_RING,
 };
 
 use rustix::mm;
@@ -372,52 +372,70 @@ impl IoUring {
 
 /// Prepares SQEs to perform various syscalls when they are submitted
 /// These all only set the relevant fields, they do not zero out everything
-// TODO: still undecided if these should be extension methods or not
-// And honestly it's six of one, half a dozen of the other in terms of DX
-pub mod prep {
-    use core::ffi::c_void;
-    use rustix::fd::AsRawFd;
-    use rustix::io_uring::{io_uring_ptr, io_uring_sqe, iovec, IoringOp};
-
+// IoUring.zig has top level functions like read, nop etc inside the main struct
+// But I think it's a lot more ergonomic to keep the IoUring interface small,
+// and also make it clear to people that what you are doing is mutating SQEs.
+pub trait PrepSqe {
     /// A no-op is more useful than may appear at first glance. For example, you
     /// could call `drain_previous_sqes()` on the returned SQE, to use the no-op
     /// to know when the ring is idle before acting on a kill signal.
-    pub fn nop(sqe: &mut io_uring_sqe, user_data: u64) {
-        sqe.opcode = IoringOp::Nop;
-        sqe.user_data = user_data.into();
+    fn prep_nop(&mut self, user_data: u64);
+
+    fn prep_read<FD: AsRawFd>(
+        &mut self,
+        user_data: u64,
+        fd: FD,
+        buffer: &mut [u8],
+        offset: u64,
+    );
+
+    fn prep_readv<FD: AsRawFd>(
+        &mut self,
+        user_data: u64,
+        fd: FD,
+        // const in libc in zig; they point to mutable buffers
+        iovecs: &[iovec],
+        offset: u64,
+    );
+}
+
+impl PrepSqe for &mut io_uring_sqe {
+    fn prep_nop(&mut self, user_data: u64) {
+        self.opcode = IoringOp::Nop;
+        self.user_data = user_data.into();
     }
 
-    pub fn read<FD: AsRawFd>(
-        sqe: &mut io_uring_sqe,
+    fn prep_read<FD: AsRawFd>(
+        &mut self,
         user_data: u64,
         fd: FD,
         buffer: &mut [u8],
         offset: u64,
     ) {
-        sqe.opcode = IoringOp::Read;
-        sqe.fd = fd.as_raw_fd();
-        sqe.addr_or_splice_off_in.addr =
+        self.opcode = IoringOp::Read;
+        self.fd = fd.as_raw_fd();
+        self.addr_or_splice_off_in.addr =
             io_uring_ptr::new(buffer.as_mut_ptr() as *mut c_void);
-        sqe.len.len = buffer.len() as u32;
-        sqe.off_or_addr2.off = offset;
-        sqe.user_data.u64_ = user_data;
+        self.len.len = buffer.len() as u32;
+        self.off_or_addr2.off = offset;
+        self.user_data.u64_ = user_data;
     }
 
-    pub fn readv<FD: AsRawFd>(
-        sqe: &mut io_uring_sqe,
+    fn prep_readv<FD: AsRawFd>(
+        &mut self,
         user_data: u64,
         fd: FD,
         // const in libc in zig; they point to mutable buffers
         iovecs: &[iovec],
         offset: u64,
     ) {
-        sqe.opcode = IoringOp::Readv;
-        sqe.fd = fd.as_raw_fd();
-        sqe.addr_or_splice_off_in.addr =
+        self.opcode = IoringOp::Readv;
+        self.fd = fd.as_raw_fd();
+        self.addr_or_splice_off_in.addr =
             io_uring_ptr::new(iovecs.as_ptr() as *mut c_void);
-        sqe.len.len = iovecs.len() as u32;
-        sqe.off_or_addr2.off = offset;
-        sqe.user_data.u64_ = user_data;
+        self.len.len = iovecs.len() as u32;
+        self.off_or_addr2.off = offset;
+        self.user_data.u64_ = user_data;
     }
 }
 
@@ -896,8 +914,8 @@ mod tests {
     fn nop() {
         let mut ring = IoUring::new(1).unwrap();
         //let sqe = unsafe { *ring.nop(0xaaaaaaaa).unwrap() };
-        let sqe = ring.get_sqe().unwrap();
-        prep::nop(sqe, 0xaaaaaaaa);
+        let mut sqe = ring.get_sqe().unwrap();
+        sqe.prep_nop(0xaaaaaaaa);
 
         //
         // Asserting sqe, field by field, as it lacks `Debug`
@@ -951,8 +969,8 @@ mod tests {
         assert_eq!(ring.cq.read_head(&mut ring.mmap), 1);
         assert_eq!(ring.cq_ready(), 0);
 
-        let sqe_barrier = ring.get_sqe().unwrap();
-        prep::nop(sqe_barrier, 0xbbbbbbbb);
+        let mut sqe_barrier = ring.get_sqe().unwrap();
+        sqe_barrier.prep_nop(0xbbbbbbbb);
         sqe_barrier.flags.set(IoringSqeFlags::IO_DRAIN, true);
         assert_eq!(unsafe { ring.submit() }, Ok(1));
         let cqe = unsafe { ring.copy_cqe().unwrap() };

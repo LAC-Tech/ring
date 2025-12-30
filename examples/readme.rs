@@ -1,7 +1,7 @@
 #![no_std]
 use ring::rustix::fs::{openat, Mode, OFlags, CWD};
 use ring::rustix::io_uring::io_uring_cqe;
-use ring::{prep, IoUring};
+use ring::{IoUring, PrepSqe};
 
 fn main() {
     let mut ring = IoUring::new(8).unwrap();
@@ -9,8 +9,8 @@ fn main() {
     let fd = openat(CWD, "README.md", OFlags::RDONLY, Mode::empty()).unwrap();
     let mut buf = [0; 1024];
 
-    let sqe = ring.get_sqe().unwrap();
-    prep::read(sqe, 0x42, fd, &mut buf, 0);
+    let mut sqe = ring.get_sqe().unwrap();
+    sqe.prep_read(0x42, fd, &mut buf, 0);
 
     // Note that the developer needs to ensure
     // that the entry pushed into submission queue is valid (e.g. fd, buffer).

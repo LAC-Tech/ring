@@ -10,18 +10,20 @@
 // I need to CONSTATLY cast things between usize and u32
 const _: () = assert!(usize::BITS >= 32);
 
+mod mmap;
 pub use rustix;
 
 use core::ffi::c_void;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::Ordering;
 use core::{assert, assert_eq, assert_ne, cmp, mem, ptr};
+use mmap::RwMmap;
 use rustix::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use rustix::io;
 use rustix::io_uring::{
     io_cqring_offsets, io_sqring_offsets, io_uring_cqe, io_uring_enter,
-    io_uring_params, io_uring_ptr, io_uring_setup, io_uring_sqe, iovec,
+    io_uring_params, io_uring_ptr, io_uring_setup, io_uring_sqe,
     IoringEnterFlags, IoringFeatureFlags, IoringOp, IoringSetupFlags,
-    IoringSqFlags, IoringSqeFlags, IORING_OFF_SQES, IORING_OFF_SQ_RING,
+    IoringSqFlags, IORING_OFF_SQES, IORING_OFF_SQ_RING,
 };
 
 use rustix::mm;
@@ -347,7 +349,7 @@ impl IoUring {
             if count > 0 {
                 // SAFETY: We just initialized cqes and checked that we copied
                 // an event into it.
-                return Ok(core::ptr::read(&cqes[0]));
+                return Ok(ptr::read(&cqes[0]));
             }
         }
     }
@@ -610,13 +612,14 @@ impl SubmissionQueue {
             let to_submit = self.sqe_tail.wrapping_sub(self.sqe_head);
             let mut new_tail = self.read_tail(mmap);
 
+            // SAFETY: Offset and length provided by the kernel
+            let array = unsafe {
+                mmap.mut_slice_at::<u32>(self.off.array, self.entries)
+            };
+
             for _ in 0..to_submit {
-                let byte_offset = self.off.array + (new_tail & self.mask) * 4;
-                // SAFETY: We trust the offsets and mask provided by the kernel.
-                unsafe {
-                    let sqe: *mut u32 = mmap.mut_ptr_at(byte_offset);
-                    *sqe = self.sqe_head & self.mask;
-                }
+                array[(new_tail & self.mask) as usize] =
+                    self.sqe_head & self.mask;
                 new_tail = new_tail.wrapping_add(1);
                 self.sqe_head = self.sqe_head.wrapping_add(1);
             }
@@ -708,7 +711,7 @@ impl CompletionQueue {
             // SAFETY: We have validated the bounds and established that the
             // source and destination are valid for the copy.
             unsafe {
-                core::ptr::copy_nonoverlapping(src, dst, n);
+                ptr::copy_nonoverlapping(src, dst, n);
             }
         }
 
@@ -720,137 +723,13 @@ impl CompletionQueue {
                 let dst = cqes[n..n + w].as_mut_ptr();
                 // SAFETY: We have validated the bounds.
                 unsafe {
-                    core::ptr::copy_nonoverlapping(src, dst, w);
+                    ptr::copy_nonoverlapping(src, dst, w);
                 }
             }
         }
 
         self.advance(mmap, count);
         count
-    }
-}
-
-#[derive(Debug)]
-struct RwMmap {
-    ptr: *mut c_void,
-    len: usize,
-}
-
-impl RwMmap {
-    fn new(
-        size: usize,
-        fd: BorrowedFd,
-        flags: mm::MapFlags,
-        offset: u64,
-    ) -> rustix::io::Result<Self> {
-        let prot_flags = mm::ProtFlags::READ | mm::ProtFlags::WRITE;
-        // SAFETY: Fd cannot be dropped because it's borrowed
-        let ptr = unsafe {
-            mm::mmap(ptr::null_mut(), size, prot_flags, flags, fd, offset)?
-        };
-
-        Ok(Self { ptr, len: size })
-    }
-}
-
-impl Drop for RwMmap {
-    fn drop(&mut self) {
-        // SAFETY: We own the pointer and the length is correct.
-        unsafe {
-            // If we fail while unmapping memory I don't know what to do.
-            mm::munmap(self.ptr, self.len).expect("munmap failed")
-        }
-    }
-}
-
-// All our pointer accesses are by u32s..
-impl RwMmap {
-    fn check_bounds(&self, offset: u32, size: usize) {
-        let end =
-            (offset as usize).checked_add(size).expect("mmap offset overflow");
-        assert!(
-            end <= self.len,
-            "mmap access out of bounds: offset {} size {} len {}",
-            offset,
-            size,
-            self.len
-        );
-    }
-
-    /// # Safety
-    ///
-    /// The caller must ensure that the memory at `byte_offset` is valid for
-    /// mutation as type `T` and follows Rust's aliasing rules.
-    unsafe fn mut_ptr_at<T>(&mut self, byte_offset: u32) -> *mut T {
-        self.check_bounds(byte_offset, mem::size_of::<T>());
-        (self.ptr as *mut u8).add(byte_offset as usize) as *mut T
-    }
-
-    /// # Safety
-    ///
-    /// The caller must ensure that the memory at `byte_offset` is a valid
-    /// representation of type `T`.
-    unsafe fn ptr_at<T>(&self, byte_offset: u32) -> *const T {
-        self.check_bounds(byte_offset, mem::size_of::<T>());
-        (self.ptr as *const u8).add(byte_offset as usize) as *const T
-    }
-
-    /// # Safety
-    ///
-    /// The caller must ensure that the memory at `byte_offset` contains a valid
-    /// u32.
-    // just avoids a bit of line noise all the times I do this
-    unsafe fn u32_at(&self, byte_offset: u32) -> u32 {
-        *self.ptr_at(byte_offset)
-    }
-
-    /// # Safety
-    ///
-    /// The caller must ensure that the memory at `byte_offset` is valid for
-    /// atomic access as a u32.
-    // Atomic needs a mutable ptr but we never mutate the value
-    // So this method avoids &mut self when we just want to read
-    unsafe fn atomic_load_u32_at(
-        &self,
-        byte_offset: u32,
-        ordering: Ordering,
-    ) -> u32 {
-        let ptr = self.ptr_at::<u32>(byte_offset) as *mut u32;
-        AtomicU32::from_ptr(ptr).load(ordering)
-    }
-
-    /// Use this when you need to do atomic writes
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure that the memory at `byte_offset` is valid for
-    /// atomic access as a u32.
-    unsafe fn atomic_u32_at(&mut self, byte_offset: u32) -> &AtomicU32 {
-        AtomicU32::from_ptr(self.mut_ptr_at(byte_offset))
-    }
-
-    /// # Safety
-    ///
-    /// The caller must ensure that the memory starting at `byte_offset` is a
-    /// valid representation of `len` elements of type `T`.
-    unsafe fn slice_at<T>(&self, byte_offset: u32, len: u32) -> &[T] {
-        let ptr = self.ptr_at::<T>(byte_offset);
-        self.check_bounds(byte_offset, (len as usize) * mem::size_of::<T>());
-        &*ptr::slice_from_raw_parts(ptr, len as usize)
-    }
-
-    /// # Safety
-    ///
-    /// The caller must ensure that the memory starting at `byte_offset` is a
-    /// valid representation of `len` elements of type `T`.
-    unsafe fn mut_slice_at<T>(
-        &mut self,
-        byte_offset: u32,
-        len: u32,
-    ) -> &mut [T] {
-        let ptr = self.mut_ptr_at::<T>(byte_offset);
-        self.check_bounds(byte_offset, (len as usize) * mem::size_of::<T>());
-        &mut *ptr::slice_from_raw_parts_mut(ptr, len as usize)
     }
 }
 

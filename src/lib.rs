@@ -907,6 +907,7 @@ mod tests {
     use super::*;
     use err::*;
     use pretty_assertions::assert_eq;
+    use rustix::io::{IoSlice, IoSliceMut};
     use rustix::{
         io::ReadWriteFlags,
         // TODO: the only place we use these constants, is in these tests?
@@ -1024,5 +1025,11 @@ mod tests {
             Mode::RUSR | Mode::WUSR,
         )
         .unwrap();
+
+        const BUFFER_WRITE: [u8; 128] = [42; 128];
+        let iovecs_write = [IoSlice::new(&BUFFER_WRITE)];
+
+        let mut buffer_read = [0u8; 128];
+        let mut iovecs_read = [IoSliceMut::new(&mut buffer_read)];
     }
 }

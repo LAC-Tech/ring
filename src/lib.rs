@@ -1070,23 +1070,24 @@ mod tests {
         let mut iovecs_read = [IoSliceMut::new(&mut buffer_read)];
 
         {
-            let mut sqe_writev = ring.get_sqe().unwrap();
-            sqe_writev.prep_writev(0xdddddddd, fd.as_fd(), &iovecs_write, 17);
-            assert_eq!(sqe_writev.opcode, IoringOp::Writev);
-            assert_eq!(unsafe { sqe_writev.off_or_addr2.off }, 17);
-            sqe_writev.flags.set(IoringSqeFlags::IO_LINK, true);
+            let mut sqe = ring.get_sqe().unwrap();
+            sqe.prep_writev(0xdddddddd, fd.as_fd(), &iovecs_write, 17);
+            assert_eq!(sqe.opcode, IoringOp::Writev);
+            assert_eq!(unsafe { sqe.off_or_addr2.off }, 17);
+            sqe.flags.set(IoringSqeFlags::IO_LINK, true);
         }
-
         {
-            let mut sqe_fsync = ring.get_sqe().unwrap();
-            sqe_fsync.prep_fsync(
-                0xdddddddd,
-                fd.as_fd(),
-                io::ReadWriteFlags::empty(),
-            );
-            assert_eq!(sqe_fsync.opcode, IoringOp::Fsync);
-            assert_eq!(sqe_fsync.fd, fd.as_raw_fd());
-            sqe_fsync.flags.set(IoringSqeFlags::IO_LINK, true);
+            let mut sqe = ring.get_sqe().unwrap();
+            sqe.prep_fsync(0xdddddddd, fd.as_fd(), io::ReadWriteFlags::empty());
+            assert_eq!(sqe.opcode, IoringOp::Fsync);
+            assert_eq!(sqe.fd, fd.as_raw_fd());
+            sqe.flags.set(IoringSqeFlags::IO_LINK, true);
+        }
+        {
+            let mut sqe = ring.get_sqe().unwrap();
+            sqe.prep_readv(0xffffffff, fd.as_fd(), &mut iovecs_read, 17);
+            assert_eq!(sqe.opcode, IoringOp::Readv);
+            assert_eq!(unsafe { sqe.off_or_addr2.off }, 17);
         }
     }
 }

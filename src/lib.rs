@@ -963,6 +963,23 @@ mod tests {
     }
 
     #[test]
+    fn readv() {
+        use rustix::fs::{openat, Mode, OFlags, CWD};
+        let mut ring = IoUring::new(1).unwrap();
+        let fd =
+            openat(CWD, "/dev/zero", OFlags::RDONLY, Mode::empty()).unwrap();
+
+        // Linux Kernel 5.4 supports IORING_REGISTER_FILES but not sparse fd
+        // sets (i.e. an fd of -1). Linux Kernel 5.5 adds support for
+        // sparse fd sets. Compare:
+        // https://github.com/torvalds/linux/blob/v5.4/fs/io_uring.c#L3119-L3124 vs
+        // https://github.com/torvalds/linux/blob/v5.8/fs/io_uring.c#L6687-L6691
+        // We therefore avoid stressing sparse fd sets here:
+        let mut registered_fds = [fd.as_raw_fd(); 1];
+        let fd_index = 0;
+    }
+
+    #[test]
     fn writev_fsync_readv() {
         use rustix::fs::{openat, Mode, OFlags, CWD};
         let mut ring = IoUring::new(4).unwrap();

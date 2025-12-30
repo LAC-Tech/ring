@@ -1,7 +1,7 @@
 #![no_std]
-use ring::rustix::fs::{openat, Mode, OFlags, CWD};
-use ring::rustix::io_uring::io_uring_cqe;
-use ring::{IoUring, PrepSqe};
+use hringas::rustix::fs::{openat, Mode, OFlags, CWD};
+use hringas::rustix::io_uring::io_uring_cqe;
+use hringas::{IoUring, PrepSqe};
 
 fn main() {
     let mut ring = IoUring::new(8).unwrap();

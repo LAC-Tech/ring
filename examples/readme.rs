@@ -1,5 +1,4 @@
-use hringas::rustix::io_uring::io_uring_cqe;
-use hringas::{IoUring, PrepSqe};
+use hringas::{io_uring_cqe, IoUring, PrepSqe};
 use std::fs;
 use std::os::fd::AsFd;
 

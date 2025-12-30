@@ -1,8 +1,7 @@
 #![no_std]
 use hringas::rustix::fs::{openat, Mode, OFlags, CWD};
 use hringas::rustix::io::Errno;
-use hringas::rustix::io_uring::io_uring_cqe;
-use hringas::{IoUring, PrepSqe};
+use hringas::{io_uring_cqe, IoUring, PrepSqe};
 use rustix::fd::AsFd;
 
 fn main() {

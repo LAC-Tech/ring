@@ -11,17 +11,24 @@
 mod mmap;
 pub use rustix;
 
+// These form part of the public API
+pub use rustix::fd::BorrowedFd;
+pub use rustix::io::{IoSlice, IoSliceMut};
+pub use rustix::io_uring::{
+    io_uring_cqe, io_uring_params, io_uring_sqe, IoringEnterFlags, IoringOp,
+    ReadWriteFlags,
+};
+
 use core::ffi::c_void;
 use core::sync::atomic::Ordering;
 use core::{assert, assert_eq, assert_ne, cmp, mem, ptr};
 use mmap::RwMmap;
-use rustix::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
+use rustix::fd::{AsFd, AsRawFd, OwnedFd};
 use rustix::io;
 use rustix::io_uring::{
-    io_cqring_offsets, io_sqring_offsets, io_uring_cqe, io_uring_enter,
-    io_uring_params, io_uring_ptr, io_uring_setup, io_uring_sqe,
-    IoringEnterFlags, IoringFeatureFlags, IoringOp, IoringSetupFlags,
-    IoringSqFlags, IORING_OFF_CQ_RING, IORING_OFF_SQES, IORING_OFF_SQ_RING,
+    io_cqring_offsets, io_sqring_offsets, io_uring_enter, io_uring_ptr,
+    io_uring_setup, IoringFeatureFlags, IoringSetupFlags, IoringSqFlags,
+    IORING_OFF_CQ_RING, IORING_OFF_SQES, IORING_OFF_SQ_RING,
 };
 use rustix::mm;
 
@@ -411,7 +418,7 @@ pub trait PrepSqe {
         &mut self,
         user_data: u64,
         fd: BorrowedFd,
-        flags: io::ReadWriteFlags,
+        flags: ReadWriteFlags,
     );
 
     fn prep_rw<T>(
@@ -435,7 +442,7 @@ pub trait PrepSqe {
         &mut self,
         user_data: u64,
         fd: BorrowedFd,
-        iovecs: &mut [io::IoSliceMut<'_>],
+        iovecs: &mut [IoSliceMut<'_>],
         offset: u64,
     );
 
@@ -458,7 +465,7 @@ impl PrepSqe for &mut io_uring_sqe {
         &mut self,
         user_data: u64,
         fd: BorrowedFd,
-        flags: io::ReadWriteFlags,
+        flags: ReadWriteFlags,
     ) {
         self.opcode = IoringOp::Fsync;
         self.fd = fd.as_raw_fd();
@@ -502,7 +509,7 @@ impl PrepSqe for &mut io_uring_sqe {
         &mut self,
         user_data: u64,
         fd: BorrowedFd,
-        iovecs: &mut [io::IoSliceMut<'_>],
+        iovecs: &mut [IoSliceMut<'_>],
         offset: u64,
     ) {
         self.prep_rw(
@@ -519,7 +526,7 @@ impl PrepSqe for &mut io_uring_sqe {
         &mut self,
         user_data: u64,
         fd: BorrowedFd,
-        iovecs: &[io::IoSlice<'_>],
+        iovecs: &[IoSlice<'_>],
         offset: u64,
     ) {
         self.prep_rw(
@@ -865,9 +872,7 @@ mod tests {
     use super::*;
     use err::*;
     use pretty_assertions::assert_eq;
-    use rustix::io::{IoSlice, IoSliceMut};
     use rustix::{
-        io::ReadWriteFlags,
         // TODO: the only place we use these constants, is in these tests?
         io_uring::{
             io_uring_ptr, ioprio_union, IoringCqeFlags, IoringOp,
@@ -987,7 +992,7 @@ mod tests {
         }
         {
             let mut sqe = ring.get_sqe().unwrap();
-            sqe.prep_fsync(0xeeeeeeee, fd.as_fd(), io::ReadWriteFlags::empty());
+            sqe.prep_fsync(0xeeeeeeee, fd.as_fd(), ReadWriteFlags::empty());
             assert_eq!(sqe.opcode, IoringOp::Fsync);
             assert_eq!(sqe.fd, fd.as_raw_fd());
             sqe.flags.set(IoringSqeFlags::IO_LINK, true);

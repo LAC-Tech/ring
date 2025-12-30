@@ -447,6 +447,7 @@ impl PrepSqe for &mut io_uring_sqe {
         fd: BorrowedFd,
         flags: io::ReadWriteFlags,
     ) {
+        self.opcode = IoringOp::Fsync;
         self.fd = fd.as_raw_fd();
         self.op_flags.rw_flags = flags;
         self.user_data.u64_ = user_data;
@@ -592,10 +593,11 @@ impl SubmissionQueue {
             return Err(err::GetSqe::SubmissionQueueFull);
         }
 
+        let index = self.sqe_tail & self.mask;
+        let byte_offset = index * mem::size_of::<io_uring_sqe>() as u32;
         // SAFETY: We have validated that the queue is not full and that
         // the index is within bounds via the mask.
-        let sqe =
-            unsafe { self.mmap_entries.mut_ptr_at(self.sqe_tail & self.mask) };
+        let sqe = unsafe { self.mmap_entries.mut_ptr_at(byte_offset) };
 
         self.sqe_tail = next;
         // SAFETY: We have exclusive access to the vacant SQE.

@@ -717,11 +717,11 @@ impl CompletionQueue {
         cqes: &mut [io_uring_cqe],
     ) -> u32 {
         let ready = self.ready(mmap);
-        let count = cmp::min(cqes.len() as u32, ready);
+        let count = cmp::min(cqes.len(), ready as usize);
         let head = self.read_head(mmap) & self.mask;
 
         // before wrapping
-        let n = cmp::min(self.entries - head, count) as usize;
+        let n = cmp::min((self.entries - head) as usize, count);
 
         // SAFETY: Offset and entries provided by kernel.
         let ring_cqes = unsafe {
@@ -744,16 +744,17 @@ impl CompletionQueue {
         if count as usize > n {
             // wrap self.cq.cqes
             let w = count as usize - n;
-            {
-                let src = ring_cqes[0..w].as_ptr();
-                let dst = cqes[n..n + w].as_mut_ptr();
-                // SAFETY: We have validated the bounds.
-                unsafe {
-                    ptr::copy_nonoverlapping(src, dst, w);
-                }
+            let src = ring_cqes[0..w].as_ptr();
+            let dst = cqes[n..n + w].as_mut_ptr();
+            // SAFETY: We have validated the bounds.
+            unsafe {
+                ptr::copy_nonoverlapping(src, dst, w);
             }
         }
 
+        let count: u32 = count
+            .try_into()
+            .expect("io_uring expects all counts and offsets to fit into u32");
         self.advance(mmap, count);
         count
     }

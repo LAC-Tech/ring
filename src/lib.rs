@@ -593,15 +593,14 @@ impl SubmissionQueue {
             return Err(err::GetSqe::SubmissionQueueFull);
         }
 
-        let index = self.sqe_tail & self.mask;
-        let byte_offset = index * mem::size_of::<io_uring_sqe>() as u32;
-        // SAFETY: We have validated that the queue is not full and that
-        // the index is within bounds via the mask.
-        let sqe = unsafe { self.mmap_entries.mut_ptr_at(byte_offset) };
-
+        // SAFETY: The length is provided by the kernel
+        let sqes = unsafe {
+            self.mmap_entries.mut_slice_at::<io_uring_sqe>(0, self.entries)
+        };
+        let sqe = &mut sqes[(self.sqe_tail & self.mask) as usize];
         self.sqe_tail = next;
-        // SAFETY: We have exclusive access to the vacant SQE.
-        unsafe { Ok(&mut *sqe) }
+
+        Ok(&mut *sqe)
     }
 
     fn flush(&mut self, mmap: &mut RwMmap) -> u32 {
@@ -612,10 +611,10 @@ impl SubmissionQueue {
             let mut new_tail = self.read_tail(mmap);
 
             for _ in 0..to_submit {
+                let byte_offset = self.off.array + (new_tail & self.mask) * 4;
                 // SAFETY: We trust the offsets and mask provided by the kernel.
                 unsafe {
-                    let sqe: *mut u32 = mmap
-                        .mut_ptr_at(self.off.array + (new_tail & self.mask));
+                    let sqe: *mut u32 = mmap.mut_ptr_at(byte_offset);
                     *sqe = self.sqe_head & self.mask;
                 }
                 new_tail = new_tail.wrapping_add(1);
@@ -838,6 +837,20 @@ impl RwMmap {
         let ptr = self.ptr_at::<T>(byte_offset);
         self.check_bounds(byte_offset, (len as usize) * mem::size_of::<T>());
         &*ptr::slice_from_raw_parts(ptr, len as usize)
+    }
+
+    /// # Safety
+    ///
+    /// The caller must ensure that the memory starting at `byte_offset` is a
+    /// valid representation of `len` elements of type `T`.
+    unsafe fn mut_slice_at<T>(
+        &mut self,
+        byte_offset: u32,
+        len: u32,
+    ) -> &mut [T] {
+        let ptr = self.mut_ptr_at::<T>(byte_offset);
+        self.check_bounds(byte_offset, (len as usize) * mem::size_of::<T>());
+        &mut *ptr::slice_from_raw_parts_mut(ptr, len as usize)
     }
 }
 
@@ -1089,5 +1102,10 @@ mod tests {
             assert_eq!(sqe.opcode, IoringOp::Readv);
             assert_eq!(unsafe { sqe.off_or_addr2.off }, 17);
         }
+
+        assert_eq!(ring.sq_ready(), 3);
+        assert_eq!(unsafe { ring.submit_and_wait(3) }, Ok(3));
+        assert_eq!(ring.sq_ready(), 0);
+        assert_eq!(ring.cq_ready(), 3);
     }
 }

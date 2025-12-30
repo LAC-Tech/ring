@@ -1,6 +1,10 @@
-// https://codeberg.org/ziglang/zig/src/branch/0.15.x/lib/std/os/linux/IoUring.zig
-// Licensed under MIT License:
-// https://codeberg.org/ziglang/zig/src/branch/0.15.x/LICENSE
+//! Pure Rust io_uring bindings that do not rely on libc, or the rust standard
+//! library. The bindings are designed to be close to liburing, while still
+//! feeling idiomatic to rust developers.
+//!
+//! Based on the [IoUring implementation in the Zig Standard library](https://codeberg.org/ziglang/zig/src/branch/0.15.x/lib/std/os/linux/IoUring.zig).
+//! The only dependency in rustix, which is roughly the equivalent of Zig's
+//! `std.os`.
 
 #![cfg_attr(not(test), no_std)]
 // I need to CONSTATLY cast things between usize and u32

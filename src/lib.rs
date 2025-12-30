@@ -444,7 +444,7 @@ impl PrepSqe for &mut io_uring_sqe {
 // We do store mmap_entries however, as it is exclusively used by this
 // struct
 #[derive(Debug)]
-pub struct SubmissionQueue {
+struct SubmissionQueue {
     // Contains the array with the actual sq entries
     mmap_entries: RwMmap,
     off: io_sqring_offsets,
@@ -578,7 +578,7 @@ impl SubmissionQueue {
 
 // Again, we do not store the mmap, as this is shared
 #[derive(Debug)]
-pub struct CompletionQueue {
+struct CompletionQueue {
     off: io_cqring_offsets,
     mask: u32,
     entries: u32,

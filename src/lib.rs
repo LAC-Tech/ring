@@ -366,7 +366,7 @@ impl IoUring {
             if count > 0 {
                 // SAFETY: We just initialized cqes and checked that we copied
                 // an event into it.
-                return Ok(ptr::read(&cqes[0]));
+                return Ok(ptr::read(&raw const cqes[0]));
             }
         }
     }

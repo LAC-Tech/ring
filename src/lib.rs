@@ -364,8 +364,10 @@ impl IoUring {
         loop {
             let count = self.copy_cqes(&mut cqes, 1)?;
             if count > 0 {
-                // SAFETY: We just initialized cqes and checked that we copied
-                // an event into it.
+                // Rustix's io_uring_cqe is not copyable because of
+                // `big_cqe: IncompleteArrayField<u64>`
+                // TODO: I hate this whole implementation. Come up with
+                // something better
                 return Ok(ptr::read(&raw const cqes[0]));
             }
         }

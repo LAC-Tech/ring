@@ -15,20 +15,20 @@ use rustix::fd::{AsFd, BorrowedFd, OwnedFd};
 use rustix::io;
 use rustix::io_uring::{
     io_cqring_offsets, io_sqring_offsets, io_uring_cqe, io_uring_enter,
-    io_uring_params, io_uring_ptr, io_uring_register, io_uring_setup,
-    io_uring_sqe, iovec, IoringEnterFlags, IoringFeatureFlags, IoringOp,
-    IoringSetupFlags, IoringSqFlags, IORING_OFF_SQES, IORING_OFF_SQ_RING,
+    io_uring_params, io_uring_setup, io_uring_sqe, IoringEnterFlags,
+    IoringFeatureFlags, IoringSetupFlags, IoringSqFlags, IORING_OFF_SQES,
+    IORING_OFF_SQ_RING,
 };
 
 use rustix::mm;
 
 #[derive(Debug)]
 pub struct IoUring {
-    pub fd: OwnedFd,
+    fd: OwnedFd,
     // A single mmap call that contains both the sq and cq
     mmap: RwMmap,
-    pub flags: IoringSetupFlags,
-    pub features: IoringFeatureFlags,
+    flags: IoringSetupFlags,
+    features: IoringFeatureFlags,
     sq: SubmissionQueue,
     cq: CompletionQueue,
 }
@@ -154,6 +154,10 @@ impl IoUring {
         assert_eq!(unsafe { mmap.u32_at(p.sq_off.ring_entries) }, p.sq_entries);
 
         Ok(Self { fd, mmap, flags: p.flags, features: p.features, sq, cq })
+    }
+
+    pub fn fd(&self) -> BorrowedFd<'_> {
+        self.fd.as_fd()
     }
 
     /// Returns a reference to a vacant SQE, or an error if the submission

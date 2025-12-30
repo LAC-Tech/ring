@@ -126,8 +126,8 @@ impl IoUring {
         let cq = unsafe { CompletionQueue::new(&p, &mmap) };
 
         // Check that our starting state is as we expect.
-        assert_eq!(unsafe { sq.read_head(&mmap) }, 0);
-        assert_eq!(unsafe { sq.read_tail(&mmap) }, 0);
+        assert_eq!(sq.read_head(&mmap), 0);
+        assert_eq!(sq.read_tail(&mmap), 0);
         assert_eq!(sq.mask, p.sq_entries - 1);
         // Allow flags.* to be non-zero, since the kernel may set
         // IORING_SQ_NEED_WAKEUP at any time.
@@ -135,8 +135,8 @@ impl IoUring {
         assert_eq!(sq.sqe_head, 0);
         assert_eq!(sq.sqe_tail, 0);
 
-        assert_eq!(unsafe { cq.read_head(&mmap) }, 0);
-        assert_eq!(unsafe { cq.read_tail(&mmap) }, 0);
+        assert_eq!({ cq.read_head(&mmap) }, 0);
+        assert_eq!({ cq.read_tail(&mmap) }, 0);
         assert_eq!(cq.mask, p.cq_entries - 1);
         assert_eq!(unsafe { mmap.u32_at(p.cq_off.overflow) }, 0);
 
@@ -150,7 +150,7 @@ impl IoUring {
     /// Returns a reference to a vacant SQE, or an error if the submission
     /// queue is full. We follow the implementation (and atomics) of
     /// liburing's `io_uring_get_sqe()`, EXCEPT that the fields are zeroed out.
-    pub unsafe fn get_sqe(&mut self) -> Result<*mut io_uring_sqe, err::GetSqe> {
+    pub fn get_sqe(&mut self) -> Result<&mut io_uring_sqe, err::GetSqe> {
         let sqe = self.sq.get_sqe(&self.mmap)?;
         *sqe = io_uring_sqe::default();
         Ok(sqe)
@@ -159,11 +159,7 @@ impl IoUring {
     /// Returns a reference to a vacant SQE, or an error if the submission
     /// queue is full. We follow the implementation (and atomics) of
     /// liburing's `io_uring_get_sqe()` exactly.
-    /// TODO: is it reasonable/possible to make this "safe" and return a
-    /// reference?
-    pub unsafe fn get_sqe_raw(
-        &mut self,
-    ) -> Result<*mut io_uring_sqe, err::GetSqe> {
+    pub fn get_sqe_raw(&mut self) -> Result<&mut io_uring_sqe, err::GetSqe> {
         self.sq.get_sqe(&self.mmap)
     }
 
@@ -232,7 +228,7 @@ impl IoUring {
     /// liburing. The rationale is to suggest that an io_uring_enter() call
     /// is needed rather than not. Matches the implementation of
     /// __io_uring_flush_sq() in liburing.
-    pub unsafe fn flush_sq(&mut self) -> u32 {
+    pub fn flush_sq(&mut self) -> u32 {
         self.sq.flush(&mut self.mmap)
     }
 
@@ -241,7 +237,7 @@ impl IoUring {
     /// explicitly awakened. For the latter case, we set the SQ thread
     /// wakeup flag. Matches the implementation of sq_ring_needs_enter() in
     /// liburing.
-    pub unsafe fn sq_ring_needs_enter(
+    pub fn sq_ring_needs_enter(
         &mut self,
         flags: &mut IoringEnterFlags,
     ) -> bool {
@@ -262,14 +258,14 @@ impl IoUring {
     /// submission queue, i.e. its length. These are SQEs that the kernel is
     /// yet to consume. Matches the implementation of io_uring_sq_ready in
     /// liburing.
-    pub unsafe fn sq_ready(&mut self) -> u32 {
+    pub fn sq_ready(&mut self) -> u32 {
         self.sq.ready(&mut self.mmap)
     }
 
     /// Returns the number of CQEs in the completion queue, i.e. its length.
     /// These are CQEs that the application is yet to consume.
     /// Matches the implementation of io_uring_cq_ready in liburing.
-    pub unsafe fn cq_ready(&mut self) -> u32 {
+    pub fn cq_ready(&mut self) -> u32 {
         self.cq.ready(&self.mmap)
     }
 
@@ -316,7 +312,7 @@ impl IoUring {
     }
 
     /// Matches the implementation of cq_ring_needs_flush() in liburing.
-    pub unsafe fn cq_ring_needs_flush(&mut self) -> bool {
+    pub fn cq_ring_needs_flush(&mut self) -> bool {
         self.sq.flag_contains(&self.mmap, IoringSqFlags::CQ_OVERFLOW)
     }
 
@@ -326,21 +322,20 @@ impl IoUring {
     /// zero-copy CQE has been processed by your application.
     /// Not idempotent, calling more than once will result in other CQEs being
     /// lost. Matches the implementation of cqe_seen() in liburing.
-    pub unsafe fn cqe_seen(&mut self, _cqe: *const io_uring_cqe) {
+    pub fn cqe_seen(&mut self, _cqe: *const io_uring_cqe) {
         self.cq.advance(&mut self.mmap, 1);
     }
 
     /// For advanced use cases only that implement custom completion queue
     /// methods. Matches the implementation of cq_advance() in liburing.
-    pub unsafe fn cq_advance(&mut self, count: u32) {
+    pub fn cq_advance(&mut self, count: u32) {
         self.cq.advance(&mut self.mmap, count);
     }
 }
 
 /// Prepares SQEs to perform various syscalls when they are submitted
 /// These all only set the relevant fields, they do not zero out everything
-// I originally thought about making this a trait, but there's weird semantics
-// with raw pointers I do not want to deal with.
+// TODO: still undecided if these should be extension methods or not
 // And honestly it's six of one, half a dozen of the other in terms of DX
 pub mod prep {
     use core::ffi::c_void;
@@ -349,42 +344,42 @@ pub mod prep {
     /// A no-op is more useful than may appear at first glance. For example, you
     /// could call `drain_previous_sqes()` on the returned SQE, to use the no-op
     /// to know when the ring is idle before acting on a kill signal.
-    pub unsafe fn nop(sqe: *mut io_uring_sqe, user_data: u64) {
-        (*sqe).opcode = IoringOp::Nop;
-        (*sqe).user_data = user_data.into();
+    pub fn nop(sqe: &mut io_uring_sqe, user_data: u64) {
+        sqe.opcode = IoringOp::Nop;
+        sqe.user_data = user_data.into();
     }
 
-    pub unsafe fn read(
-        sqe: *mut io_uring_sqe,
+    pub fn read(
+        sqe: &mut io_uring_sqe,
         user_data: u64,
         fd: i32,
         buffer: &mut [u8],
         offset: u64,
     ) {
-        (*sqe).opcode = IoringOp::Read;
-        (*sqe).fd = fd;
-        (*sqe).addr_or_splice_off_in.addr =
+        sqe.opcode = IoringOp::Read;
+        sqe.fd = fd;
+        sqe.addr_or_splice_off_in.addr =
             io_uring_ptr::new(buffer.as_mut_ptr() as *mut c_void);
-        (*sqe).len.len = buffer.len() as u32;
-        (*sqe).off_or_addr2.off = offset;
-        (*sqe).user_data.u64_ = user_data;
+        sqe.len.len = buffer.len() as u32;
+        sqe.off_or_addr2.off = offset;
+        sqe.user_data.u64_ = user_data;
     }
 
-    pub unsafe fn readv(
-        sqe: *mut io_uring_sqe,
+    pub fn readv(
+        sqe: &mut io_uring_sqe,
         user_data: u64,
         fd: i32,
         // const in libc in zig; they point to mutable buffers
         iovecs: &[iovec],
         offset: u64,
     ) {
-        (*sqe).opcode = IoringOp::Readv;
-        (*sqe).fd = fd;
-        (*sqe).addr_or_splice_off_in.addr =
+        sqe.opcode = IoringOp::Readv;
+        sqe.fd = fd;
+        sqe.addr_or_splice_off_in.addr =
             io_uring_ptr::new(iovecs.as_ptr() as *mut c_void);
-        (*sqe).len.len = iovecs.len() as u32;
-        (*sqe).off_or_addr2.off = offset;
-        (*sqe).user_data.u64_ = user_data;
+        sqe.len.len = iovecs.len() as u32;
+        sqe.off_or_addr2.off = offset;
+        sqe.user_data.u64_ = user_data;
     }
 }
 
@@ -449,25 +444,27 @@ impl SubmissionQueue {
     // man 7 io_uring:
     // - "You add SQEs to the tail of the SQ. The kernel reads SQEs off the head
     //   of the queue."
-    unsafe fn read_head(&self, mmap: &RwMmap) -> u32 {
-        mmap.atomic_load_u32_at(self.off.head, Ordering::Acquire)
+    fn read_head(&self, mmap: &RwMmap) -> u32 {
+        unsafe { mmap.atomic_load_u32_at(self.off.head, Ordering::Acquire) }
     }
 
-    unsafe fn flag_contains(&self, mmap: &RwMmap, flag: IoringSqFlags) -> bool {
-        let bits = mmap.atomic_load_u32_at(self.off.flags, Ordering::Relaxed);
+    fn flag_contains(&self, mmap: &RwMmap, flag: IoringSqFlags) -> bool {
+        let bits = unsafe {
+            mmap.atomic_load_u32_at(self.off.flags, Ordering::Relaxed)
+        };
         let flags = IoringSqFlags::from_bits_retain(bits);
         flags.contains(flag)
     }
 
     // This method helped me catch a bug. I do not care if it is shallow.
-    unsafe fn read_tail(&self, mmap: &RwMmap) -> u32 {
-        mmap.u32_at(self.off.tail)
+    fn read_tail(&self, mmap: &RwMmap) -> u32 {
+        unsafe { mmap.u32_at(self.off.tail) }
     }
 
-    unsafe fn get_sqe(
+    fn get_sqe(
         &mut self,
         mmap: &RwMmap,
-    ) -> Result<*mut io_uring_sqe, err::GetSqe> {
+    ) -> Result<&mut io_uring_sqe, err::GetSqe> {
         let head = self.read_head(mmap);
         // Remember that these head and tail offsets wrap around every four
         // billion operations. We must therefore use wrapping addition
@@ -477,36 +474,40 @@ impl SubmissionQueue {
             return Err(err::GetSqe::SubmissionQueueFull);
         }
 
-        let sqe = self.mmap_entries.mut_ptr_at(self.sqe_tail & self.mask);
+        let sqe =
+            unsafe { self.mmap_entries.mut_ptr_at(self.sqe_tail & self.mask) };
 
         self.sqe_tail = next;
-        Ok(sqe)
+        unsafe { Ok(&mut *sqe) }
     }
 
-    unsafe fn flush(&mut self, mmap: &mut RwMmap) -> u32 {
+    fn flush(&mut self, mmap: &mut RwMmap) -> u32 {
         if self.sqe_head != self.sqe_tail {
             // Fill in SQEs that we have queued up, adding them to the
             // kernel ring.
             let to_submit = self.sqe_tail.wrapping_sub(self.sqe_head);
-            let mut tail = self.read_tail(mmap);
+            let mut new_tail = self.read_tail(mmap);
 
             for _ in 0..to_submit {
-                let sqe: *mut u32 =
-                    mmap.mut_ptr_at(self.off.array + (tail & self.mask));
-                *sqe = self.sqe_head & self.mask;
-                tail = tail.wrapping_add(1);
+                unsafe {
+                    let sqe: *mut u32 = mmap
+                        .mut_ptr_at(self.off.array + (new_tail & self.mask));
+                    *sqe = self.sqe_head & self.mask;
+                }
+                new_tail = new_tail.wrapping_add(1);
                 self.sqe_head = self.sqe_head.wrapping_add(1);
             }
 
             // Ensure that the kernel can actually see the SQE updates when
             // it sees the tail update.
-            mmap.atomic_u32_at(self.off.tail).store(tail, Ordering::Release);
+            let tail = unsafe { mmap.atomic_u32_at(self.off.tail) };
+            tail.store(new_tail, Ordering::Release);
         }
 
         self.ready(mmap)
     }
 
-    unsafe fn ready(&mut self, mmap: &mut RwMmap) -> u32 {
+    fn ready(&mut self, mmap: &mut RwMmap) -> u32 {
         // Always use the shared ring state (i.e. not self.sqe_head) to
         // avoid going out of sync, see https://github.com/axboe/liburing/issues/92.
         self.sqe_tail.wrapping_sub(self.read_head(mmap))
@@ -531,39 +532,40 @@ impl CompletionQueue {
         }
     }
 
-    unsafe fn read_head(&self, mmap: &RwMmap) -> u32 {
-        mmap.u32_at(self.off.head)
+    fn read_head(&self, mmap: &RwMmap) -> u32 {
+        unsafe { mmap.u32_at(self.off.head) }
     }
 
-    unsafe fn read_tail(&self, mmap: &RwMmap) -> u32 {
-        mmap.atomic_load_u32_at(self.off.tail, Ordering::Acquire)
+    fn read_tail(&self, mmap: &RwMmap) -> u32 {
+        unsafe { mmap.atomic_load_u32_at(self.off.tail, Ordering::Acquire) }
     }
 
-    unsafe fn ready(&mut self, mmap: &RwMmap) -> u32 {
+    fn ready(&mut self, mmap: &RwMmap) -> u32 {
         self.read_tail(mmap).wrapping_sub(self.read_head(mmap))
     }
 
-    unsafe fn advance(&mut self, mmap: &mut RwMmap, count: u32) {
+    fn advance(&mut self, mmap: &mut RwMmap, count: u32) {
         if count > 0 {
-            mmap.atomic_u32_at(self.off.head)
-                .fetch_add(count, Ordering::Release);
+            let atomic_head = unsafe { mmap.atomic_u32_at(self.off.head) };
+            atomic_head.fetch_add(count, Ordering::Release);
         }
     }
 
-    unsafe fn copy_ready_events(
+    fn copy_ready_events(
         &mut self,
         mmap: &mut RwMmap,
         cqes: &mut [io_uring_cqe],
     ) -> u32 {
         let ready = self.ready(mmap);
         let count = cmp::min(cqes.len() as u32, ready);
-        let head = mmap.u32_at(self.off.head) & self.mask;
+        let head = self.read_head(mmap) & self.mask;
 
         // before wrapping
         let n = cmp::min(self.entries - head, count) as usize;
 
-        let ring_cqes =
-            mmap.slice_at::<io_uring_cqe>(self.off.cqes, self.entries);
+        let ring_cqes = unsafe {
+            mmap.slice_at::<io_uring_cqe>(self.off.cqes, self.entries)
+        };
 
         // io_uring_cqe is not copyable; it has an array field "big_cqe"
         // since big_cqe never seems to be read we shall copy it anyway
@@ -571,7 +573,9 @@ impl CompletionQueue {
             let head = head as usize;
             let src = ring_cqes[head..head + n].as_ptr();
             let dst = cqes.as_mut_ptr();
-            core::ptr::copy_nonoverlapping(src, dst, n);
+            unsafe {
+                core::ptr::copy_nonoverlapping(src, dst, n);
+            }
         }
 
         if count as usize > n {
@@ -580,7 +584,9 @@ impl CompletionQueue {
             {
                 let src = ring_cqes[0..w].as_ptr();
                 let dst = cqes[n..n + w].as_mut_ptr();
-                core::ptr::copy_nonoverlapping(src, dst, w);
+                unsafe {
+                    core::ptr::copy_nonoverlapping(src, dst, w);
+                }
             }
         }
 

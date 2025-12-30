@@ -33,7 +33,7 @@ const U32_SIZE: u32 = mem::size_of::<u32>() as u32;
 const CQE_SIZE: u32 = mem::size_of::<io_uring_cqe>() as u32;
 const SQE_SIZE: u32 = mem::size_of::<io_uring_sqe>() as u32;
 
-// A lot of this was done at runtime by IoUring zig, but because this is a 13rd
+// A lot of this was done at runtime by IoUring.zig, but because this is a 3rd
 // party library we can be more aggressive about preventing compilation
 const _: () = {
     assert!(mem::size_of::<io_uring_params>() == 120);
@@ -412,6 +412,15 @@ pub trait PrepSqe {
         flags: io::ReadWriteFlags,
     );
 
+    fn prep_rw<T>(
+        &mut self,
+        op: IoringOp,
+        fd: BorrowedFd,
+        addr: *const T,
+        len: usize,
+        offset: u64,
+    );
+
     fn prep_read(
         &mut self,
         user_data: u64,
@@ -437,23 +446,6 @@ pub trait PrepSqe {
     );
 }
 
-// Helper method for various prep functions that read/write to/from fds and
-// buffers.
-fn prep_rw<T>(
-    sqe: &mut io_uring_sqe,
-    op: IoringOp,
-    fd: BorrowedFd,
-    addr: *const T,
-    len: usize,
-    offset: u64,
-) {
-    sqe.opcode = op;
-    sqe.fd = fd.as_raw_fd();
-    sqe.addr_or_splice_off_in.addr = io_uring_ptr::new(addr as *mut c_void);
-    sqe.len.len = len as u32;
-    sqe.off_or_addr2.off = offset;
-}
-
 impl PrepSqe for &mut io_uring_sqe {
     fn prep_nop(&mut self, user_data: u64) {
         self.opcode = IoringOp::Nop;
@@ -472,6 +464,27 @@ impl PrepSqe for &mut io_uring_sqe {
         self.user_data.u64_ = user_data;
     }
 
+    /// Helper method for various prep functions that read/write to/from fds and
+    /// buffers.
+    fn prep_rw<T>(
+        &mut self,
+        op: IoringOp,
+        fd: BorrowedFd,
+        addr: *const T,
+        len: usize,
+        offset: u64,
+    ) {
+        let len: u32 = len
+            .try_into()
+            .expect("all lengths passed into io_uring must fit in a u32");
+        self.opcode = op;
+        self.fd = fd.as_raw_fd();
+        self.addr_or_splice_off_in.addr =
+            io_uring_ptr::new(addr as *mut c_void);
+        self.len.len = len;
+        self.off_or_addr2.off = offset;
+    }
+
     fn prep_read(
         &mut self,
         user_data: u64,
@@ -479,7 +492,7 @@ impl PrepSqe for &mut io_uring_sqe {
         buf: &mut [u8],
         offset: u64,
     ) {
-        prep_rw(self, IoringOp::Read, fd, buf.as_mut_ptr(), buf.len(), offset);
+        self.prep_rw(IoringOp::Read, fd, buf.as_mut_ptr(), buf.len(), offset);
         self.user_data.u64_ = user_data;
     }
 
@@ -490,8 +503,7 @@ impl PrepSqe for &mut io_uring_sqe {
         iovecs: &mut [io::IoSliceMut<'_>],
         offset: u64,
     ) {
-        prep_rw(
-            self,
+        self.prep_rw(
             IoringOp::Readv,
             fd,
             iovecs.as_ptr(),
@@ -508,8 +520,7 @@ impl PrepSqe for &mut io_uring_sqe {
         iovecs: &[io::IoSlice<'_>],
         offset: u64,
     ) {
-        prep_rw(
-            self,
+        self.prep_rw(
             IoringOp::Writev,
             fd,
             iovecs.as_ptr(),
@@ -674,7 +685,6 @@ impl CompletionQueue {
         Self {
             off: p.cq_off,
             mask: mmap.u32_at(p.cq_off.ring_mask),
-
             entries: p.cq_entries,
         }
     }

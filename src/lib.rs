@@ -386,7 +386,12 @@ pub trait PrepSqe {
     /// to know when the ring is idle before acting on a kill signal.
     fn prep_nop(&mut self, user_data: u64);
 
-    fn prep_fsync(&mut self, fd: BorrowedFd, flags: IoringSqeFlags);
+    fn prep_fsync(
+        &mut self,
+        user_data: u64,
+        fd: BorrowedFd,
+        flags: io::ReadWriteFlags,
+    );
 
     fn prep_read(
         &mut self,
@@ -400,8 +405,15 @@ pub trait PrepSqe {
         &mut self,
         user_data: u64,
         fd: BorrowedFd,
-        // const in libc in zig; they point to mutable buffers
-        iovecs: &[iovec],
+        iovecs: &mut [io::IoSliceMut<'_>],
+        offset: u64,
+    );
+
+    fn prep_writev(
+        &mut self,
+        user_data: u64,
+        fd: BorrowedFd,
+        bufs: &[io::IoSlice<'_>],
         offset: u64,
     );
 }
@@ -429,9 +441,15 @@ impl PrepSqe for &mut io_uring_sqe {
         self.user_data = user_data.into();
     }
 
-    fn prep_fsync(&mut self, fd: BorrowedFd, flags: IoringSqeFlags) {
+    fn prep_fsync(
+        &mut self,
+        user_data: u64,
+        fd: BorrowedFd,
+        flags: io::ReadWriteFlags,
+    ) {
         self.fd = fd.as_raw_fd();
-        self.flags = flags;
+        self.op_flags.rw_flags = flags;
+        self.user_data.u64_ = user_data;
     }
 
     fn prep_read(
@@ -449,13 +467,30 @@ impl PrepSqe for &mut io_uring_sqe {
         &mut self,
         user_data: u64,
         fd: BorrowedFd,
-        // const in libc in zig; they point to mutable buffers
-        iovecs: &[iovec],
+        iovecs: &mut [io::IoSliceMut<'_>],
         offset: u64,
     ) {
         prep_rw(
             self,
             IoringOp::Readv,
+            fd,
+            iovecs.as_ptr(),
+            iovecs.len(),
+            offset,
+        );
+        self.user_data.u64_ = user_data;
+    }
+
+    fn prep_writev(
+        &mut self,
+        user_data: u64,
+        fd: BorrowedFd,
+        iovecs: &[io::IoSlice<'_>],
+        offset: u64,
+    ) {
+        prep_rw(
+            self,
+            IoringOp::Writev,
             fd,
             iovecs.as_ptr(),
             iovecs.len(),
@@ -1031,5 +1066,11 @@ mod tests {
 
         let mut buffer_read = [0u8; 128];
         let mut iovecs_read = [IoSliceMut::new(&mut buffer_read)];
+
+        let mut sqe_writev = ring.get_sqe().unwrap();
+        sqe_writev.prep_writev(0xdddddddd, fd.as_fd(), &iovecs_write, 17);
+        assert_eq!(sqe_writev.opcode, IoringOp::Writev);
+        assert_eq!(unsafe { sqe_writev.off_or_addr2.off }, 17);
+        sqe_writev.flags.set(IoringSqeFlags::IO_LINK, true);
     }
 }

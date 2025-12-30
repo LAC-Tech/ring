@@ -1,7 +1,8 @@
 ⚠️ **WIP, not all tests have been implemented yet** ⚠️
 
 [docs](https://docs.rs/hringas/latest/hringas/)
-[examples](/examples/readme.rs)
+
+[example](/examples/readme.rs)
 
 Rust io_uring bindings.
 

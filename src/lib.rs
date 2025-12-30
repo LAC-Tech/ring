@@ -970,7 +970,7 @@ mod tests {
         }
         {
             let mut sqe = ring.get_sqe().unwrap();
-            sqe.prep_fsync(0xdddddddd, fd.as_fd(), io::ReadWriteFlags::empty());
+            sqe.prep_fsync(0xeeeeeeee, fd.as_fd(), io::ReadWriteFlags::empty());
             assert_eq!(sqe.opcode, IoringOp::Fsync);
             assert_eq!(sqe.fd, fd.as_raw_fd());
             sqe.flags.set(IoringSqeFlags::IO_LINK, true);
@@ -986,5 +986,25 @@ mod tests {
         assert_eq!(unsafe { ring.submit_and_wait(3) }, Ok(3));
         assert_eq!(ring.sq_ready(), 0);
         assert_eq!(ring.cq_ready(), 3);
+
+        let cqe = unsafe { ring.copy_cqe() }.unwrap();
+        assert_eq!(cqe.user_data.u64_(), 0xdddddddd);
+        assert_eq!(cqe.res, BUFFER_WRITE.len().try_into().unwrap());
+        assert_eq!(cqe.flags, IoringCqeFlags::empty());
+        assert_eq!(ring.cq_ready(), 2);
+
+        let cqe = unsafe { ring.copy_cqe() }.unwrap();
+        assert_eq!(cqe.user_data.u64_(), 0xeeeeeeee);
+        assert_eq!(cqe.res, 0);
+        assert_eq!(cqe.flags, IoringCqeFlags::empty());
+        assert_eq!(ring.cq_ready(), 1);
+
+        let cqe = unsafe { ring.copy_cqe() }.unwrap();
+        assert_eq!(cqe.user_data.u64_(), 0xffffffff);
+        assert_eq!(cqe.res, buffer_read.len().try_into().unwrap());
+        assert_eq!(cqe.flags, IoringCqeFlags::empty());
+        assert_eq!(ring.cq_ready(), 0);
+
+        assert_eq!(&BUFFER_WRITE[0..], &buffer_read[0..]);
     }
 }

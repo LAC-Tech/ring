@@ -17,7 +17,7 @@ use rustix::io_uring::{
     io_cqring_offsets, io_sqring_offsets, io_uring_cqe, io_uring_enter,
     io_uring_params, io_uring_ptr, io_uring_setup, io_uring_sqe, iovec,
     IoringEnterFlags, IoringFeatureFlags, IoringOp, IoringSetupFlags,
-    IoringSqFlags, IORING_OFF_SQES, IORING_OFF_SQ_RING,
+    IoringSqFlags, IoringSqeFlags, IORING_OFF_SQES, IORING_OFF_SQ_RING,
 };
 
 use rustix::mm;
@@ -187,7 +187,7 @@ impl IoUring {
     ///
     /// # Safety
     ///
-    /// See [`Self::enter`]
+    /// See [`Self::enter`].
     pub unsafe fn submit(&mut self) -> Result<u32, err::Enter> {
         self.submit_and_wait(0)
     }
@@ -311,7 +311,7 @@ impl IoUring {
     ///
     /// # Safety
     ///
-    /// May call [`Self::enter`]
+    /// May call [`Self::enter`].
     pub unsafe fn copy_cqes(
         &mut self,
         cqes: &mut [io_uring_cqe],
@@ -335,7 +335,7 @@ impl IoUring {
     ///
     /// # Safety
     ///
-    /// May call [`Self::enter`]
+    /// May call [`Self::enter`].
     pub unsafe fn copy_cqe(&mut self) -> Result<io_uring_cqe, err::Enter> {
         let mut cqes = [io_uring_cqe::default(); 1];
         loop {
@@ -370,22 +370,25 @@ impl IoUring {
     }
 }
 
-/// Prepares SQEs to perform various syscalls when they are submitted
-/// These all only set the relevant fields, they do not zero out everything
 // IoUring.zig has top level functions like read, nop etc inside the main struct
 // But I think it's a lot more ergonomic to keep the IoUring interface small,
 // and also make it clear to people that what you are doing is mutating SQEs.
+/// Prepares SQEs to perform various syscalls when they are submitted.
+/// These all only set the relevant fields, they do not zero out everything -
+/// they are intented be called on the return value of [`IoUring::get_sqe`].
 pub trait PrepSqe {
     /// A no-op is more useful than may appear at first glance. For example, you
     /// could call `drain_previous_sqes()` on the returned SQE, to use the no-op
     /// to know when the ring is idle before acting on a kill signal.
     fn prep_nop(&mut self, user_data: u64);
 
+    fn prep_fsync<FD: AsRawFd>(&mut self, fd: FD, flags: IoringSqeFlags);
+
     fn prep_read<FD: AsRawFd>(
         &mut self,
         user_data: u64,
         fd: FD,
-        buffer: &mut [u8],
+        buf: &mut [u8],
         offset: u64,
     );
 
@@ -399,25 +402,42 @@ pub trait PrepSqe {
     );
 }
 
+// Helper method for various prep functions that read/write to/from fds and
+// buffers.
+fn prep_rw<FD: AsRawFd, T>(
+    sqe: &mut io_uring_sqe,
+    op: IoringOp,
+    fd: FD,
+    addr: *const T,
+    len: usize,
+    offset: u64,
+) {
+    sqe.opcode = op;
+    sqe.fd = fd.as_raw_fd();
+    sqe.addr_or_splice_off_in.addr = io_uring_ptr::new(addr as *mut c_void);
+    sqe.len.len = len as u32;
+    sqe.off_or_addr2.off = offset;
+}
+
 impl PrepSqe for &mut io_uring_sqe {
     fn prep_nop(&mut self, user_data: u64) {
         self.opcode = IoringOp::Nop;
         self.user_data = user_data.into();
     }
 
+    fn prep_fsync<FD: AsRawFd>(&mut self, fd: FD, flags: IoringSqeFlags) {
+        self.fd = fd.as_raw_fd();
+        self.flags = flags;
+    }
+
     fn prep_read<FD: AsRawFd>(
         &mut self,
         user_data: u64,
         fd: FD,
-        buffer: &mut [u8],
+        buf: &mut [u8],
         offset: u64,
     ) {
-        self.opcode = IoringOp::Read;
-        self.fd = fd.as_raw_fd();
-        self.addr_or_splice_off_in.addr =
-            io_uring_ptr::new(buffer.as_mut_ptr() as *mut c_void);
-        self.len.len = buffer.len() as u32;
-        self.off_or_addr2.off = offset;
+        prep_rw(self, IoringOp::Read, fd, buf.as_mut_ptr(), buf.len(), offset);
         self.user_data.u64_ = user_data;
     }
 
@@ -429,12 +449,14 @@ impl PrepSqe for &mut io_uring_sqe {
         iovecs: &[iovec],
         offset: u64,
     ) {
-        self.opcode = IoringOp::Readv;
-        self.fd = fd.as_raw_fd();
-        self.addr_or_splice_off_in.addr =
-            io_uring_ptr::new(iovecs.as_ptr() as *mut c_void);
-        self.len.len = iovecs.len() as u32;
-        self.off_or_addr2.off = offset;
+        prep_rw(
+            self,
+            IoringOp::Readv,
+            fd,
+            iovecs.as_ptr(),
+            iovecs.len(),
+            offset,
+        );
         self.user_data.u64_ = user_data;
     }
 }

@@ -204,7 +204,7 @@ impl IoUring {
     ///
     /// # Safety
     ///
-    /// See [`Self::enter`]
+    /// See [`Self::enter`].
     pub unsafe fn submit_and_wait(
         &mut self,
         wait_nr: u32,

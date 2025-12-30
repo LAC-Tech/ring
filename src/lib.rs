@@ -376,6 +376,7 @@ impl IoUring {
 // And honestly it's six of one, half a dozen of the other in terms of DX
 pub mod prep {
     use core::ffi::c_void;
+    use rustix::fd::AsRawFd;
     use rustix::io_uring::{io_uring_ptr, io_uring_sqe, iovec, IoringOp};
 
     /// A no-op is more useful than may appear at first glance. For example, you
@@ -386,15 +387,15 @@ pub mod prep {
         sqe.user_data = user_data.into();
     }
 
-    pub fn read(
+    pub fn read<FD: AsRawFd>(
         sqe: &mut io_uring_sqe,
         user_data: u64,
-        fd: i32,
+        fd: FD,
         buffer: &mut [u8],
         offset: u64,
     ) {
         sqe.opcode = IoringOp::Read;
-        sqe.fd = fd;
+        sqe.fd = fd.as_raw_fd();
         sqe.addr_or_splice_off_in.addr =
             io_uring_ptr::new(buffer.as_mut_ptr() as *mut c_void);
         sqe.len.len = buffer.len() as u32;
@@ -402,16 +403,16 @@ pub mod prep {
         sqe.user_data.u64_ = user_data;
     }
 
-    pub fn readv(
+    pub fn readv<FD: AsRawFd>(
         sqe: &mut io_uring_sqe,
         user_data: u64,
-        fd: i32,
+        fd: FD,
         // const in libc in zig; they point to mutable buffers
         iovecs: &[iovec],
         offset: u64,
     ) {
         sqe.opcode = IoringOp::Readv;
-        sqe.fd = fd;
+        sqe.fd = fd.as_raw_fd();
         sqe.addr_or_splice_off_in.addr =
             io_uring_ptr::new(iovecs.as_ptr() as *mut c_void);
         sqe.len.len = iovecs.len() as u32;

@@ -870,13 +870,9 @@ mod tests {
     #[test]
     fn nop() {
         let mut ring = IoUring::new(1).unwrap();
-        //let sqe = unsafe { *ring.nop(0xaaaaaaaa).unwrap() };
         let mut sqe = ring.get_sqe().unwrap();
         sqe.prep_nop(0xaaaaaaaa);
 
-        //
-        // Asserting sqe, field by field, as it lacks `Debug`
-        //
         assert_eq!(sqe.opcode, IoringOp::Nop);
         assert_eq!(sqe.flags, IoringSqeFlags::empty());
         assert_eq!(

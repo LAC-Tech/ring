@@ -3,6 +3,7 @@ use hringas::rustix::fs::{openat, Mode, OFlags, CWD};
 use hringas::rustix::io::Errno;
 use hringas::rustix::io_uring::io_uring_cqe;
 use hringas::{IoUring, PrepSqe};
+use rustix::fd::AsFd;
 
 fn main() {
     let mut ring = IoUring::new(8).unwrap();
@@ -11,7 +12,7 @@ fn main() {
     let mut buf = [0; 1024];
 
     let mut sqe = ring.get_sqe().unwrap();
-    sqe.prep_read(0x42, fd, &mut buf, 0);
+    sqe.prep_read(0x42, fd.as_fd(), &mut buf, 0);
 
     // Note that the developer needs to ensure
     // that the entry pushed into submission queue is valid (e.g. fd, buffer).

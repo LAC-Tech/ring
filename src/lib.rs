@@ -382,20 +382,20 @@ pub trait PrepSqe {
     /// to know when the ring is idle before acting on a kill signal.
     fn prep_nop(&mut self, user_data: u64);
 
-    fn prep_fsync<FD: AsRawFd>(&mut self, fd: FD, flags: IoringSqeFlags);
+    fn prep_fsync(&mut self, fd: BorrowedFd, flags: IoringSqeFlags);
 
-    fn prep_read<FD: AsRawFd>(
+    fn prep_read(
         &mut self,
         user_data: u64,
-        fd: FD,
+        fd: BorrowedFd,
         buf: &mut [u8],
         offset: u64,
     );
 
-    fn prep_readv<FD: AsRawFd>(
+    fn prep_readv(
         &mut self,
         user_data: u64,
-        fd: FD,
+        fd: BorrowedFd,
         // const in libc in zig; they point to mutable buffers
         iovecs: &[iovec],
         offset: u64,
@@ -404,10 +404,10 @@ pub trait PrepSqe {
 
 // Helper method for various prep functions that read/write to/from fds and
 // buffers.
-fn prep_rw<FD: AsRawFd, T>(
+fn prep_rw<T>(
     sqe: &mut io_uring_sqe,
     op: IoringOp,
-    fd: FD,
+    fd: BorrowedFd,
     addr: *const T,
     len: usize,
     offset: u64,
@@ -425,15 +425,15 @@ impl PrepSqe for &mut io_uring_sqe {
         self.user_data = user_data.into();
     }
 
-    fn prep_fsync<FD: AsRawFd>(&mut self, fd: FD, flags: IoringSqeFlags) {
+    fn prep_fsync(&mut self, fd: BorrowedFd, flags: IoringSqeFlags) {
         self.fd = fd.as_raw_fd();
         self.flags = flags;
     }
 
-    fn prep_read<FD: AsRawFd>(
+    fn prep_read(
         &mut self,
         user_data: u64,
-        fd: FD,
+        fd: BorrowedFd,
         buf: &mut [u8],
         offset: u64,
     ) {
@@ -441,10 +441,10 @@ impl PrepSqe for &mut io_uring_sqe {
         self.user_data.u64_ = user_data;
     }
 
-    fn prep_readv<FD: AsRawFd>(
+    fn prep_readv(
         &mut self,
         user_data: u64,
-        fd: FD,
+        fd: BorrowedFd,
         // const in libc in zig; they point to mutable buffers
         iovecs: &[iovec],
         offset: u64,

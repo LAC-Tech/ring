@@ -911,6 +911,7 @@ mod tests {
             IoringSqeFlags, IORING_OFF_CQ_RING, IORING_OFF_SQES,
         },
     };
+    use tempfile::tempdir;
 
     #[test]
     fn structs_offsets_entries() {
@@ -1003,5 +1004,21 @@ mod tests {
         assert_eq!(ring.sq.sqe_tail, 2);
         assert_eq!(ring.sq.read_tail(&mut ring.mmap), 2);
         assert_eq!(ring.cq.read_head(&mut ring.mmap), 2);
+    }
+
+    #[test]
+    fn writev_fsync_readv() {
+        use rustix::fs::{openat, Mode, OFlags, CWD};
+        let mut ring = IoUring::new(4).unwrap();
+        let tmp = tempdir().unwrap();
+        let path = "test_io_uring_writev_fsync_readv";
+
+        let fd = openat(
+            CWD,
+            tmp.path().join(path),
+            OFlags::CREATE | OFlags::RDWR | OFlags::TRUNC,
+            Mode::RUSR | Mode::WUSR,
+        )
+        .unwrap();
     }
 }

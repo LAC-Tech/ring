@@ -123,7 +123,7 @@ impl IoUring {
         let sq_mask = unsafe { mmap.u32_at(p.sq_off.ring_mask) };
         let sq = SubmissionQueue::new(p, fd.as_fd(), sq_mask)
             .map_err(UnexpectedErrno)?;
-        let cq = unsafe { CompletionQueue::new(&p, &mmap) };
+        let cq = unsafe { CompletionQueue::new(p, &mmap) };
 
         // Check that our starting state is as we expect.
         assert_eq!(sq.read_head(&mmap), 0);
@@ -406,7 +406,7 @@ pub struct SubmissionQueue {
 }
 
 impl SubmissionQueue {
-    pub fn new(
+    fn new(
         p: &io_uring_params,
         fd: BorrowedFd<'_>,
         mask: u32,
@@ -628,17 +628,31 @@ impl Drop for RwMmap {
 
 // All our pointer accesses are by u32s..
 impl RwMmap {
+    fn check_bounds(&self, offset: u32, size: usize) {
+        let end =
+            (offset as usize).checked_add(size).expect("mmap offset overflow");
+        assert!(
+            end <= self.len,
+            "mmap access out of bounds: offset {} size {} len {}",
+            offset,
+            size,
+            self.len
+        );
+    }
+
+    unsafe fn mut_ptr_at<T>(&mut self, byte_offset: u32) -> *mut T {
+        self.check_bounds(byte_offset, mem::size_of::<T>());
+        (self.ptr as *mut u8).add(byte_offset as usize) as *mut T
+    }
+
     unsafe fn ptr_at<T>(&self, byte_offset: u32) -> *const T {
+        self.check_bounds(byte_offset, mem::size_of::<T>());
         (self.ptr as *const u8).add(byte_offset as usize) as *const T
     }
 
     // just avoids a bit of line noise all the times I do this
     unsafe fn u32_at(&self, byte_offset: u32) -> u32 {
         *self.ptr_at(byte_offset)
-    }
-
-    unsafe fn mut_ptr_at<T>(&mut self, byte_offset: u32) -> *mut T {
-        (self.ptr as *mut u8).add(byte_offset as usize) as *mut T
     }
 
     // Atomic needs a mutable ptr but we never mutate the value
@@ -658,6 +672,7 @@ impl RwMmap {
 
     unsafe fn slice_at<T>(&self, byte_offset: u32, len: u32) -> &[T] {
         let ptr = self.ptr_at::<T>(byte_offset);
+        self.check_bounds(byte_offset, (len as usize) * mem::size_of::<T>());
         &*ptr::slice_from_raw_parts(ptr, len as usize)
     }
 }

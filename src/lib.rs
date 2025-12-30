@@ -893,11 +893,8 @@ mod tests {
     fn nop() {
         let mut ring = IoUring::new(1).unwrap();
         //let sqe = unsafe { *ring.nop(0xaaaaaaaa).unwrap() };
-        let sqe = unsafe {
-            let sqe = ring.get_sqe().unwrap();
-            prep::nop(sqe, 0xaaaaaaaa);
-            *sqe
-        };
+        let sqe = ring.get_sqe().unwrap();
+        prep::nop(sqe, 0xaaaaaaaa);
 
         //
         // Asserting sqe, field by field, as it lacks `Debug`
@@ -932,30 +929,28 @@ mod tests {
 
         assert_eq!(ring.sq.sqe_head, 0);
         assert_eq!(ring.sq.sqe_tail, 1);
-        unsafe {
-            assert_eq!(ring.sq.read_tail(&mut ring.mmap), 0);
-            assert_eq!(ring.cq.read_head(&mut ring.mmap), 0);
-            assert_eq!(ring.sq_ready(), 1);
-            assert_eq!(ring.cq_ready(), 0);
-        }
+        assert_eq!(ring.sq.read_tail(&mut ring.mmap), 0);
+        assert_eq!(ring.cq.read_head(&mut ring.mmap), 0);
+        assert_eq!(ring.sq_ready(), 1);
+        assert_eq!(ring.cq_ready(), 0);
 
         assert_eq!(unsafe { ring.submit() }, Ok(1));
         assert_eq!(ring.sq.sqe_head, 1);
         assert_eq!(ring.sq.sqe_tail, 1);
-        assert_eq!(unsafe { ring.sq.read_tail(&mut ring.mmap) }, 1);
-        assert_eq!(unsafe { ring.cq.read_head(&mut ring.mmap) }, 0);
-        assert_eq!(unsafe { ring.sq_ready() }, 0);
+        assert_eq!(ring.sq.read_tail(&mut ring.mmap), 1);
+        assert_eq!(ring.cq.read_head(&mut ring.mmap), 0);
+        assert_eq!(ring.sq_ready(), 0);
 
         let cqe = unsafe { ring.copy_cqe().unwrap() };
         assert_eq!(cqe.user_data.u64_(), 0xaaaaaaaa);
         assert_eq!(cqe.res, 0);
         assert_eq!(cqe.flags, IoringCqeFlags::empty());
-        assert_eq!(unsafe { ring.cq.read_head(&mut ring.mmap) }, 1);
-        assert_eq!(unsafe { ring.cq_ready() }, 0);
+        assert_eq!(ring.cq.read_head(&mut ring.mmap), 1);
+        assert_eq!(ring.cq_ready(), 0);
 
-        let sqe_barrier = unsafe { ring.get_sqe().unwrap() };
-        unsafe { prep::nop(sqe_barrier, 0xbbbbbbbb) };
-        unsafe { (*sqe_barrier).flags.set(IoringSqeFlags::IO_DRAIN, true) };
+        let sqe_barrier = ring.get_sqe().unwrap();
+        prep::nop(sqe_barrier, 0xbbbbbbbb);
+        sqe_barrier.flags.set(IoringSqeFlags::IO_DRAIN, true);
         assert_eq!(unsafe { ring.submit() }, Ok(1));
         let cqe = unsafe { ring.copy_cqe().unwrap() };
         assert_eq!(cqe.user_data.u64_(), 0xbbbbbbbb);
@@ -963,7 +958,7 @@ mod tests {
         assert_eq!(cqe.flags, IoringCqeFlags::empty());
         assert_eq!(ring.sq.sqe_head, 2);
         assert_eq!(ring.sq.sqe_tail, 2);
-        assert_eq!(unsafe { ring.sq.read_tail(&mut ring.mmap) }, 2);
-        assert_eq!(unsafe { ring.cq.read_head(&mut ring.mmap) }, 2);
+        assert_eq!(ring.sq.read_tail(&mut ring.mmap), 2);
+        assert_eq!(ring.cq.read_head(&mut ring.mmap), 2);
     }
 }

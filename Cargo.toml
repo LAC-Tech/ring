@@ -5,7 +5,7 @@ edition = "2021"
 license = "MIT"
 description = "no libc, no_std, pure rust bindings to io_uring"
 repository = "https://github.com/LAC-Tech/hringas"
-keywords = ["io_uring", "event loop", "linux"]
+keywords = ["io_uring", "event_loop", "linux"]
 categories = ["api-bindings", "asynchronous", "concurrency", "no-std",
 "os::linux-apis"]
 

@@ -1,3 +1,7 @@
+[docs](https://docs.rs/hringas/latest/hringas/)
+
+[example](/examples/readme.rs)
+
 ⚠️ **WIP, not all tests have been implemented yet** ⚠️
 
 | IoUring.zig test                               | Passes |
@@ -43,10 +47,6 @@
 | ring mapped buffers multishot recv             | ❌     |
 | copy_cqes with wrapping sq.cqes buffer         | ❌     |
 | bind/listen/connect                            | ❌     |
-
-[docs](https://docs.rs/hringas/latest/hringas/)
-
-[example](/examples/readme.rs)
 
 Rust io_uring bindings.
 

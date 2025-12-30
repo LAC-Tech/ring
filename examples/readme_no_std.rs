@@ -1,13 +1,15 @@
+#![no_std]
+use hringas::rustix::fs::{openat, Mode, OFlags, CWD};
+use hringas::rustix::io::Errno;
 use hringas::rustix::io_uring::io_uring_cqe;
 use hringas::{IoUring, PrepSqe};
-use std::fs;
-use std::os::fd::AsFd;
+use rustix::fd::AsFd;
 
 fn main() {
     let mut ring = IoUring::new(8).unwrap();
 
-    let fd = fs::File::open("README.md").unwrap();
-    let mut buf = vec![0; 1024];
+    let fd = openat(CWD, "README.md", OFlags::RDONLY, Mode::empty()).unwrap();
+    let mut buf = [0; 1024];
 
     let mut sqe = ring.get_sqe().unwrap();
     sqe.prep_read(0x42, fd.as_fd(), &mut buf, 0);
@@ -20,5 +22,5 @@ fn main() {
     };
 
     assert_eq!(user_data.u64_(), 0x42);
-    assert!(res >= 0, "read error: {}", res);
+    assert!(res >= 0, "read error: {}", Errno::from_raw_os_error(-res));
 }

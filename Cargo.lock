@@ -25,6 +25,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "hringas"
+version = "0.1.0"
+dependencies = [
+ "pretty_assertions",
+ "rustix",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.178"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -44,14 +52,6 @@ checksum = "3ae130e2f271fbc2ac3a40fb1d07180839cdbbe443c7a27e1e3c13c5cac0116d"
 dependencies = [
  "diff",
  "yansi",
-]
-
-[[package]]
-name = "ring"
-version = "0.1.0"
-dependencies = [
- "pretty_assertions",
- "rustix",
 ]
 
 [[package]]

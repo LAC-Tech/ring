@@ -73,6 +73,8 @@ impl IoUring {
 
         use io::Errno;
 
+        // SAFETY: `entries` and `p4 have been validated.
+        // The kernel will initialize the fields of `p`.
         let res = unsafe { io_uring_setup(entries, p) };
         let fd = res.map_err(|errno| match errno {
             Errno::FAULT => ParamsOutsideAccessibleAddressSpace,
@@ -120,9 +122,13 @@ impl IoUring {
         )
         .map_err(UnexpectedErrno)?;
 
+        // SAFETY: We trust the kernel to provide valid offsets within the
+        // memory it just mapped for us.
         let sq_mask = unsafe { mmap.u32_at(p.sq_off.ring_mask) };
         let sq = SubmissionQueue::new(p, fd.as_fd(), sq_mask)
             .map_err(UnexpectedErrno)?;
+        // SAFETY: CompletionQueue::new is internal and we pass it a valid
+        // mmap and parameters provided by the kernel.
         let cq = unsafe { CompletionQueue::new(p, &mmap) };
 
         // Check that our starting state is as we expect.
@@ -131,6 +137,7 @@ impl IoUring {
         assert_eq!(sq.mask, p.sq_entries - 1);
         // Allow flags.* to be non-zero, since the kernel may set
         // IORING_SQ_NEED_WAKEUP at any time.
+        // SAFETY: Offsets are provided by the kernel.
         assert_eq!(unsafe { mmap.u32_at(p.sq_off.dropped) }, 0);
         assert_eq!(sq.sqe_head, 0);
         assert_eq!(sq.sqe_tail, 0);
@@ -138,10 +145,12 @@ impl IoUring {
         assert_eq!({ cq.read_head(&mmap) }, 0);
         assert_eq!({ cq.read_tail(&mmap) }, 0);
         assert_eq!(cq.mask, p.cq_entries - 1);
+        // SAFETY: Offsets are provided by the kernel.
         assert_eq!(unsafe { mmap.u32_at(p.cq_off.overflow) }, 0);
 
         // We expect the kernel copies p.sq_entries to the u32 pointed to by
         // p.sq_off.ring_entries, see https://github.com/torvalds/linux/blob/v5.8/fs/io_uring.c#L7843-L7844.
+        // SAFETY: Offsets are provided by the kernel.
         assert_eq!(unsafe { mmap.u32_at(p.sq_off.ring_entries) }, p.sq_entries);
 
         Ok(Self { fd, mmap, flags: p.flags, features: p.features, sq, cq })
@@ -171,6 +180,10 @@ impl IoUring {
     /// to match the amount of actually submitted sqes during this call. A value
     /// higher or lower, including 0, may be returned.
     /// Matches the implementation of io_uring_submit() in liburing.
+    ///
+    /// # Safety
+    ///
+    /// See [`Self::enter`]
     pub unsafe fn submit(&mut self) -> Result<u32, err::Enter> {
         self.submit_and_wait(0)
     }
@@ -178,6 +191,10 @@ impl IoUring {
     /// Like submit(), but allows waiting for events as well.
     /// Returns the number of SQEs submitted.
     /// Matches the implementation of io_uring_submit_and_wait() in liburing.
+    ///
+    /// # Safety
+    ///
+    /// See [`Self::enter`]
     pub unsafe fn submit_and_wait(
         &mut self,
         wait_nr: u32,
@@ -197,6 +214,12 @@ impl IoUring {
 
     /// Tell the kernel we have submitted SQEs and/or want to wait for CQEs.
     /// Returns the number of SQEs submitted.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that any buffers or file descriptors referenced
+    /// by the SQEs remain valid until the kernel has completed the
+    /// requested operations.
     pub unsafe fn enter(
         &mut self,
         to_submit: u32,
@@ -281,6 +304,10 @@ impl IoUring {
     /// amortize the atomic store release to `cq.head` across the batch. See https://github.com/axboe/liburing/issues/103#issuecomment-686665007.
     /// Matches the implementation of io_uring_peek_batch_cqe() in liburing, but
     /// supports waiting.
+    ///
+    /// # Safety
+    ///
+    /// May call [`Self::enter`]
     pub unsafe fn copy_cqes(
         &mut self,
         cqes: &mut [io_uring_cqe],
@@ -301,11 +328,17 @@ impl IoUring {
     /// Returns a copy of an I/O completion, waiting for it if necessary, and
     /// advancing the CQ ring. A convenience method for `copy_cqes()` for
     /// when you don't need to batch or peek.
+    ///
+    /// # Safety
+    ///
+    /// May call [`Self::enter`]
     pub unsafe fn copy_cqe(&mut self) -> Result<io_uring_cqe, err::Enter> {
         let mut cqes = [io_uring_cqe::default(); 1];
         loop {
             let count = self.copy_cqes(&mut cqes, 1)?;
             if count > 0 {
+                // SAFETY: We just initialized cqes and checked that we copied
+                // an event into it.
                 return Ok(core::ptr::read(&cqes[0]));
             }
         }
@@ -445,10 +478,12 @@ impl SubmissionQueue {
     // - "You add SQEs to the tail of the SQ. The kernel reads SQEs off the head
     //   of the queue."
     fn read_head(&self, mmap: &RwMmap) -> u32 {
+        // SAFETY: The offset is provided by the kernel.
         unsafe { mmap.atomic_load_u32_at(self.off.head, Ordering::Acquire) }
     }
 
     fn flag_contains(&self, mmap: &RwMmap, flag: IoringSqFlags) -> bool {
+        // SAFETY: The offset is provided by the kernel.
         let bits = unsafe {
             mmap.atomic_load_u32_at(self.off.flags, Ordering::Relaxed)
         };
@@ -458,6 +493,7 @@ impl SubmissionQueue {
 
     // This method helped me catch a bug. I do not care if it is shallow.
     fn read_tail(&self, mmap: &RwMmap) -> u32 {
+        // SAFETY: The offset is provided by the kernel.
         unsafe { mmap.u32_at(self.off.tail) }
     }
 
@@ -474,10 +510,13 @@ impl SubmissionQueue {
             return Err(err::GetSqe::SubmissionQueueFull);
         }
 
+        // SAFETY: We have validated that the queue is not full and that
+        // the index is within bounds via the mask.
         let sqe =
             unsafe { self.mmap_entries.mut_ptr_at(self.sqe_tail & self.mask) };
 
         self.sqe_tail = next;
+        // SAFETY: We have exclusive access to the vacant SQE.
         unsafe { Ok(&mut *sqe) }
     }
 
@@ -489,6 +528,7 @@ impl SubmissionQueue {
             let mut new_tail = self.read_tail(mmap);
 
             for _ in 0..to_submit {
+                // SAFETY: We trust the offsets and mask provided by the kernel.
                 unsafe {
                     let sqe: *mut u32 = mmap
                         .mut_ptr_at(self.off.array + (new_tail & self.mask));
@@ -500,6 +540,7 @@ impl SubmissionQueue {
 
             // Ensure that the kernel can actually see the SQE updates when
             // it sees the tail update.
+            // SAFETY: The offset is provided by the kernel.
             let tail = unsafe { mmap.atomic_u32_at(self.off.tail) };
             tail.store(new_tail, Ordering::Release);
         }
@@ -523,6 +564,10 @@ pub struct CompletionQueue {
 }
 
 impl CompletionQueue {
+    /// # Safety
+    ///
+    /// The caller must ensure that the `params` and `mmap` are consistent
+    /// and that the `mmap` is valid for the duration of the queue's life.
     unsafe fn new(p: &io_uring_params, mmap: &RwMmap) -> Self {
         Self {
             off: p.cq_off,
@@ -533,10 +578,12 @@ impl CompletionQueue {
     }
 
     fn read_head(&self, mmap: &RwMmap) -> u32 {
+        // SAFETY: Offset provided by kernel.
         unsafe { mmap.u32_at(self.off.head) }
     }
 
     fn read_tail(&self, mmap: &RwMmap) -> u32 {
+        // SAFETY: Offset provided by kernel.
         unsafe { mmap.atomic_load_u32_at(self.off.tail, Ordering::Acquire) }
     }
 
@@ -546,6 +593,7 @@ impl CompletionQueue {
 
     fn advance(&mut self, mmap: &mut RwMmap, count: u32) {
         if count > 0 {
+            // SAFETY: Offset provided by kernel.
             let atomic_head = unsafe { mmap.atomic_u32_at(self.off.head) };
             atomic_head.fetch_add(count, Ordering::Release);
         }
@@ -563,6 +611,7 @@ impl CompletionQueue {
         // before wrapping
         let n = cmp::min(self.entries - head, count) as usize;
 
+        // SAFETY: Offset and entries provided by kernel.
         let ring_cqes = unsafe {
             mmap.slice_at::<io_uring_cqe>(self.off.cqes, self.entries)
         };
@@ -573,6 +622,8 @@ impl CompletionQueue {
             let head = head as usize;
             let src = ring_cqes[head..head + n].as_ptr();
             let dst = cqes.as_mut_ptr();
+            // SAFETY: We have validated the bounds and established that the
+            // source and destination are valid for the copy.
             unsafe {
                 core::ptr::copy_nonoverlapping(src, dst, n);
             }
@@ -584,6 +635,7 @@ impl CompletionQueue {
             {
                 let src = ring_cqes[0..w].as_ptr();
                 let dst = cqes[n..n + w].as_mut_ptr();
+                // SAFETY: We have validated the bounds.
                 unsafe {
                     core::ptr::copy_nonoverlapping(src, dst, w);
                 }
@@ -609,6 +661,7 @@ impl RwMmap {
         offset: u64,
     ) -> rustix::io::Result<Self> {
         let prot_flags = mm::ProtFlags::READ | mm::ProtFlags::WRITE;
+        // SAFETY: Fd cannot be dropped because it's borrowed
         let ptr = unsafe {
             mm::mmap(ptr::null_mut(), size, prot_flags, flags, fd, offset)?
         };
@@ -619,6 +672,7 @@ impl RwMmap {
 
 impl Drop for RwMmap {
     fn drop(&mut self) {
+        // SAFETY: We own the pointer and the length is correct.
         unsafe {
             // If we fail while unmapping memory I don't know what to do.
             mm::munmap(self.ptr, self.len).expect("munmap failed")
@@ -640,21 +694,37 @@ impl RwMmap {
         );
     }
 
+    /// # Safety
+    ///
+    /// The caller must ensure that the memory at `byte_offset` is valid for
+    /// mutation as type `T` and follows Rust's aliasing rules.
     unsafe fn mut_ptr_at<T>(&mut self, byte_offset: u32) -> *mut T {
         self.check_bounds(byte_offset, mem::size_of::<T>());
         (self.ptr as *mut u8).add(byte_offset as usize) as *mut T
     }
 
+    /// # Safety
+    ///
+    /// The caller must ensure that the memory at `byte_offset` is a valid
+    /// representation of type `T`.
     unsafe fn ptr_at<T>(&self, byte_offset: u32) -> *const T {
         self.check_bounds(byte_offset, mem::size_of::<T>());
         (self.ptr as *const u8).add(byte_offset as usize) as *const T
     }
 
+    /// # Safety
+    ///
+    /// The caller must ensure that the memory at `byte_offset` contains a valid
+    /// u32.
     // just avoids a bit of line noise all the times I do this
     unsafe fn u32_at(&self, byte_offset: u32) -> u32 {
         *self.ptr_at(byte_offset)
     }
 
+    /// # Safety
+    ///
+    /// The caller must ensure that the memory at `byte_offset` is valid for
+    /// atomic access as a u32.
     // Atomic needs a mutable ptr but we never mutate the value
     // So this method avoids &mut self when we just want to read
     unsafe fn atomic_load_u32_at(
@@ -665,11 +735,21 @@ impl RwMmap {
         let ptr = self.ptr_at::<u32>(byte_offset) as *mut u32;
         AtomicU32::from_ptr(ptr).load(ordering)
     }
+
     /// Use this when you need to do atomic writes
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that the memory at `byte_offset` is valid for
+    /// atomic access as a u32.
     unsafe fn atomic_u32_at(&mut self, byte_offset: u32) -> &AtomicU32 {
         AtomicU32::from_ptr(self.mut_ptr_at(byte_offset))
     }
 
+    /// # Safety
+    ///
+    /// The caller must ensure that the memory starting at `byte_offset` is a
+    /// valid representation of `len` elements of type `T`.
     unsafe fn slice_at<T>(&self, byte_offset: u32, len: u32) -> &[T] {
         let ptr = self.ptr_at::<T>(byte_offset);
         self.check_bounds(byte_offset, (len as usize) * mem::size_of::<T>());

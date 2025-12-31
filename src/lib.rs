@@ -462,6 +462,7 @@ pub trait SqeExt {
 
     fn set_len(&mut self, len: usize);
     fn set_addr<T>(&mut self, addr: *const T);
+    fn set_buf(&mut self, buf: &mut [u8], offset: u64);
 
     fn prep_read(
         &mut self,
@@ -541,6 +542,12 @@ impl SqeExt for &mut io_uring_sqe {
             io_uring_ptr::new(addr as *mut c_void);
     }
 
+    fn set_buf(&mut self, buf: &mut [u8], offset: u64) {
+        self.set_addr(buf.as_ptr());
+        self.set_len(buf.len());
+        self.off_or_addr2.off = offset;
+    }
+
     fn prep_read(
         &mut self,
         user_data: u64,
@@ -548,13 +555,9 @@ impl SqeExt for &mut io_uring_sqe {
         buf: &mut [u8],
         offset: u64,
     ) {
-        self.prep_rw(
-            IoringOp::Read,
-            fd.as_raw_fd(),
-            buf.as_mut_ptr(),
-            buf.len(),
-            offset,
-        );
+        self.opcode = IoringOp::Read;
+        self.fd = fd.as_raw_fd();
+        self.set_buf(buf, offset);
         self.user_data.u64_ = user_data;
     }
 
@@ -565,14 +568,11 @@ impl SqeExt for &mut io_uring_sqe {
         iovecs: &[IoSliceMut<'_>],
         offset: u64,
     ) {
-        self.prep_rw(
-            IoringOp::Readv,
-            fd.as_raw_fd(),
-            iovecs.as_ptr(),
-            iovecs.len(),
-            offset,
-        );
-        self.flags.set(IoringSqeFlags::FIXED_FILE, true);
+        self.opcode = IoringOp::Readv;
+        self.fd = fd.as_raw_fd();
+        self.set_addr(iovecs.as_ptr());
+        self.set_len(iovecs.len());
+        self.off_or_addr2.off = offset;
         self.user_data.u64_ = user_data;
     }
 
@@ -583,15 +583,14 @@ impl SqeExt for &mut io_uring_sqe {
         iovecs: &[IoSliceMut<'_>],
         offset: u64,
     ) {
-        self.prep_rw(
-            IoringOp::Readv,
-            file_index
-                .try_into()
-                .expect("io_uring requires fixed file index to fit in an i32"),
-            iovecs.as_ptr(),
-            iovecs.len(),
-            offset,
-        );
+        self.opcode = IoringOp::Readv;
+        self.fd = file_index
+            .try_into()
+            .expect("fixed file index must fit into a u32");
+        self.set_addr(iovecs.as_ptr());
+        self.set_len(iovecs.len());
+        self.off_or_addr2.off = offset;
+        self.flags.set(IoringSqeFlags::FIXED_FILE, true);
         self.user_data.u64_ = user_data;
     }
 

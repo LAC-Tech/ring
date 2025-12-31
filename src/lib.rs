@@ -461,6 +461,7 @@ pub trait SqeExt {
     );
 
     fn set_len(&mut self, len: usize);
+    fn set_addr<T>(&mut self, addr: *const T);
 
     fn prep_read(
         &mut self,
@@ -525,8 +526,7 @@ impl SqeExt for &mut io_uring_sqe {
     ) {
         self.opcode = op;
         self.fd = fd;
-        self.addr_or_splice_off_in.addr =
-            io_uring_ptr::new(addr as *mut c_void);
+        self.set_addr(addr);
         self.set_len(len);
         self.off_or_addr2.off = offset;
     }
@@ -534,6 +534,11 @@ impl SqeExt for &mut io_uring_sqe {
     fn set_len(&mut self, len: usize) {
         self.len.len =
             len.try_into().expect("io_uring requires lengths to fit in a u32");
+    }
+
+    fn set_addr<T>(&mut self, addr: *const T) {
+        self.addr_or_splice_off_in.addr =
+            io_uring_ptr::new(addr as *mut c_void);
     }
 
     fn prep_read(

@@ -28,8 +28,8 @@ use rustix::io;
 use rustix::io_uring::{
     io_cqring_offsets, io_sqring_offsets, io_uring_enter, io_uring_ptr,
     io_uring_register, io_uring_setup, IoringFeatureFlags, IoringRegisterOp,
-    IoringSetupFlags, IoringSqFlags, IORING_OFF_CQ_RING, IORING_OFF_SQES,
-    IORING_OFF_SQ_RING,
+    IoringSetupFlags, IoringSqFlags, IoringSqeFlags, IORING_OFF_CQ_RING,
+    IORING_OFF_SQES, IORING_OFF_SQ_RING,
 };
 use rustix::mm;
 
@@ -446,7 +446,7 @@ pub trait PrepSqe {
     fn prep_rw<T>(
         &mut self,
         op: IoringOp,
-        fd: BorrowedFd,
+        fd: i32,
         addr: *const T,
         len: usize,
         offset: u64,
@@ -464,6 +464,14 @@ pub trait PrepSqe {
         &mut self,
         user_data: u64,
         fd: BorrowedFd,
+        iovecs: &[IoSliceMut<'_>],
+        offset: u64,
+    );
+
+    fn prep_readv_fixed_file(
+        &mut self,
+        user_data: u64,
+        file_index: usize,
         iovecs: &[IoSliceMut<'_>],
         offset: u64,
     );
@@ -500,19 +508,17 @@ impl PrepSqe for &mut io_uring_sqe {
     fn prep_rw<T>(
         &mut self,
         op: IoringOp,
-        fd: BorrowedFd,
+        fd: i32,
         addr: *const T,
         len: usize,
         offset: u64,
     ) {
-        let len: u32 = len
-            .try_into()
-            .expect("all lengths passed into io_uring must fit in a u32");
         self.opcode = op;
-        self.fd = fd.as_raw_fd();
+        self.fd = fd;
         self.addr_or_splice_off_in.addr =
             io_uring_ptr::new(addr as *mut c_void);
-        self.len.len = len;
+        self.len.len =
+            len.try_into().expect("io_uring requires lengths to fit in a u32");
         self.off_or_addr2.off = offset;
     }
 
@@ -523,7 +529,13 @@ impl PrepSqe for &mut io_uring_sqe {
         buf: &mut [u8],
         offset: u64,
     ) {
-        self.prep_rw(IoringOp::Read, fd, buf.as_mut_ptr(), buf.len(), offset);
+        self.prep_rw(
+            IoringOp::Read,
+            fd.as_raw_fd(),
+            buf.as_mut_ptr(),
+            buf.len(),
+            offset,
+        );
         self.user_data.u64_ = user_data;
     }
 
@@ -536,7 +548,27 @@ impl PrepSqe for &mut io_uring_sqe {
     ) {
         self.prep_rw(
             IoringOp::Readv,
-            fd,
+            fd.as_raw_fd(),
+            iovecs.as_ptr(),
+            iovecs.len(),
+            offset,
+        );
+        self.flags.set(IoringSqeFlags::FIXED_FILE, true);
+        self.user_data.u64_ = user_data;
+    }
+
+    fn prep_readv_fixed_file(
+        &mut self,
+        user_data: u64,
+        file_index: usize,
+        iovecs: &[IoSliceMut<'_>],
+        offset: u64,
+    ) {
+        self.prep_rw(
+            IoringOp::Readv,
+            file_index
+                .try_into()
+                .expect("io_uring requires fixed file index to fit in an i32"),
             iovecs.as_ptr(),
             iovecs.len(),
             offset,
@@ -553,7 +585,7 @@ impl PrepSqe for &mut io_uring_sqe {
     ) {
         self.prep_rw(
             IoringOp::Writev,
-            fd,
+            fd.as_raw_fd(),
             iovecs.as_ptr(),
             iovecs.len(),
             offset,
@@ -1020,7 +1052,7 @@ mod tests {
         let mut buffer = [42u8; 128];
         let iovecs = [IoSliceMut::new(&mut buffer)];
         let mut sqe = ring.get_sqe().unwrap();
-        sqe.prep_readv(0xcccccccc, fd_index, &iovecs, 0);
+        sqe.prep_readv_fixed_file(0xcccccccc, fd_index, &iovecs, 0);
         assert_eq!(sqe.opcode, IoringOp::Readv);
         sqe.flags.set(IoringSqeFlags::FIXED_FILE, true);
     }

@@ -27,8 +27,9 @@ use rustix::fd::{AsFd, AsRawFd, OwnedFd};
 use rustix::io;
 use rustix::io_uring::{
     io_cqring_offsets, io_sqring_offsets, io_uring_enter, io_uring_ptr,
-    io_uring_setup, IoringFeatureFlags, IoringSetupFlags, IoringSqFlags,
-    IORING_OFF_CQ_RING, IORING_OFF_SQES, IORING_OFF_SQ_RING,
+    io_uring_register, io_uring_setup, IoringFeatureFlags, IoringRegisterOp,
+    IoringSetupFlags, IoringSqFlags, IORING_OFF_CQ_RING, IORING_OFF_SQES,
+    IORING_OFF_SQ_RING,
 };
 use rustix::mm;
 
@@ -400,6 +401,27 @@ impl IoUring {
     pub fn cq_advance(&mut self, count: u32) {
         self.cq.advance(&mut self.mmap, count);
     }
+
+    /// Registers an array of buffers for use with `prep_read_fixed` and
+    /// `prep_write_fixed`.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that the file descriptors remain valid until they
+    /// have been unregistered.
+    pub unsafe fn register_files(
+        &self,
+        fds: &[BorrowedFd],
+    ) -> Result<(), err::Register> {
+        io_uring_register(
+            self.fd.as_fd(),
+            IoringRegisterOp::RegisterFiles,
+            fds.as_ptr() as *const c_void,
+            fds.len().try_into().expect("length of fds must fit in a u32"),
+        )?;
+
+        Ok(())
+    }
 }
 
 // IoUring.zig has top level functions like read, nop etc inside the main struct
@@ -770,6 +792,7 @@ impl CompletionQueue {
 }
 
 mod err {
+    use crate::rustix::io::Errno;
     #[derive(Debug, Eq, PartialEq)]
     pub enum Init {
         EntriesZero,
@@ -790,7 +813,7 @@ mod err {
         /// prohibits io_uring syscalls:
         PermissionDenied,
         SystemOutdated,
-        UnexpectedErrno(rustix::io::Errno),
+        UnexpectedErrno(Errno),
     }
 
     #[derive(Debug, Eq, PartialEq)]
@@ -827,7 +850,7 @@ mod err {
         /// could complete. This can happen while waiting for events
         /// with IORING_ENTER_GETEVENTS:
         SignalInterrupt,
-        UnexpectedErrno(rustix::io::Errno),
+        UnexpectedErrno(Errno),
     }
 
     #[derive(Debug)]
@@ -858,6 +881,19 @@ mod err {
         // being torn down:
         RingShuttingDownOrAlreadyRegisteringFiles,
         UnexpectedErrno(rustix::io::Errno),
+    }
+
+    impl From<rustix::io::Errno> for Register {
+        fn from(errno: Errno) -> Self {
+            match errno {
+                Errno::BADF => Self::FileDescriptorInvalid,
+                Errno::INVAL => Self::FilesEmpty,
+                Errno::MFILE => Self::UserFdQuotaExceeded,
+                Errno::NOMEM => Self::SystemResources,
+                Errno::NXIO => Self::RingShuttingDownOrAlreadyRegisteringFiles,
+                _ => Self::UnexpectedErrno(errno),
+            }
+        }
     }
 
     #[derive(Debug)]

@@ -858,7 +858,7 @@ mod err {
         UnexpectedErrno(Errno),
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, Eq, PartialEq)]
     pub enum GetSqe {
         SubmissionQueueFull,
     }
@@ -1027,7 +1027,19 @@ mod tests {
         let mut sqe = ring.get_sqe().unwrap();
         sqe.prep_readv_fixed_file(0xcccccccc, fd_index, &iovecs, 0);
         assert_eq!(sqe.opcode, IoringOp::Readv);
-        sqe.flags.set(IoringSqeFlags::FIXED_FILE, true);
+        assert!(sqe.flags.contains(IoringSqeFlags::FIXED_FILE));
+
+        // Hack because Ok branch does not implement debug..
+        match ring.get_sqe() {
+            Err(GetSqe::SubmissionQueueFull) => {}
+            _ => panic!("expect submission queue to be full"),
+        }
+        assert_eq!(unsafe { ring.submit() }, Ok(1));
+        let cqe = unsafe { ring.copy_cqe() }.unwrap();
+        assert_eq!(cqe.user_data.u64_(), 0xcccccccc);
+        assert_eq!(cqe.res, buffer.len().try_into().unwrap());
+        assert_eq!(cqe.flags, IoringCqeFlags::empty());
+        assert!(&buffer.iter().all(|&n| n == 0));
     }
 
     #[test]

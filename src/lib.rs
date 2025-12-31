@@ -20,6 +20,7 @@ pub use rustix::io_uring::{
 };
 
 use core::ffi::c_void;
+use core::ptr::null;
 use core::sync::atomic::Ordering;
 use core::{assert, assert_eq, assert_ne, cmp, mem, ptr};
 use mmap::RwMmap;
@@ -414,13 +415,37 @@ impl IoUring {
         fds: &[BorrowedFd],
     ) -> Result<(), err::Register> {
         io_uring_register(
-            self.fd.as_fd(),
+            self.fd(),
             IoringRegisterOp::RegisterFiles,
             fds.as_ptr() as *const c_void,
             fds.len().try_into().expect("length of fds must fit in a u32"),
         )?;
 
         Ok(())
+    }
+
+    /// Unregisters all registered file descriptors previously associated with
+    /// the ring.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that no pending SQEs reference the registered
+    /// indices.
+    pub unsafe fn unregister_files(&mut self) -> Result<(), err::Unregister> {
+        use err::Unregister;
+        use rustix::io::Errno;
+        let res = io_uring_register(
+            self.fd(),
+            IoringRegisterOp::UnregisterFiles,
+            null(),
+            0,
+        );
+
+        match res {
+            Ok(_) => Ok(()),
+            Err(Errno::NXIO) => Err(Unregister::FilesNotRegistered),
+            Err(errno) => Err(Unregister::UnexpectedErrno(errno)),
+        }
     }
 }
 
@@ -902,9 +927,15 @@ mod err {
     }
 
     #[derive(Debug)]
+    pub enum Unregister {
+        FilesNotRegistered,
+        UnexpectedErrno(Errno),
+    }
+
+    #[derive(Debug)]
     pub enum RegisterBufRing {
         ArgumentsInvalid,
-        UnexpectedErrno(rustix::io::Errno),
+        UnexpectedErrno(Errno),
     }
 }
 
@@ -1040,6 +1071,8 @@ mod tests {
         assert_eq!(cqe.res, buffer.len().try_into().unwrap());
         assert_eq!(cqe.flags, IoringCqeFlags::empty());
         assert!(&buffer.iter().all(|&n| n == 0));
+
+        unsafe { ring.unregister_files().unwrap() }
     }
 
     #[test]

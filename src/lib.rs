@@ -849,7 +849,6 @@ mod err {
         EntriesZero,
         EntriesNotPowerOfTwo,
         ParamsOutsideAccessibleAddressSpace,
-
         /// The resv array contains non-zero data, p.flags contains an
         /// unsupported flag, entries out of bounds,
         /// IORING_SETUP_SQ_AFF was specified without IORING_SETUP_SQPOLL,
@@ -1097,52 +1096,6 @@ mod tests {
     }
 
     #[test]
-    fn write_read() {
-        use rustix::fs::{openat, Mode, OFlags, CWD};
-        use tempfile::tempdir;
-        let mut ring = IoUring::new(2).unwrap();
-        let tmp = tempdir().unwrap();
-        let path = "test_io_uring_write_read";
-
-        let fd = openat(
-            CWD,
-            tmp.path().join(path),
-            OFlags::CREATE | OFlags::RDWR | OFlags::TRUNC,
-            Mode::RUSR | Mode::WUSR,
-        )
-        .unwrap();
-
-        const BUFFER_WRITE: [u8; 20] = [97; 20];
-        let mut buffer_read = [98u8; 20];
-
-        let mut sqe_write = ring.get_sqe().unwrap();
-        sqe_write.prep_write(0x11111111, fd.as_fd(), &BUFFER_WRITE, 10);
-        assert_eq!(sqe_write.opcode, IoringOp::Write);
-        assert_eq!(unsafe { sqe_write.off_or_addr2.off }, 10);
-        sqe_write.flags.set(IoringSqeFlags::IO_LINK, true);
-
-        let mut sqe_read = ring.get_sqe().unwrap();
-        sqe_read.prep_read(0x22222222, fd.as_fd(), &mut buffer_read, 10);
-        assert_eq!(sqe_read.opcode, IoringOp::Read);
-        assert_eq!(unsafe { sqe_read.off_or_addr2.off }, 10);
-
-        assert_eq!(unsafe { ring.submit() }, Ok(2));
-
-        let cqe_write = unsafe { ring.copy_cqe() }.unwrap();
-        let cqe_read = unsafe { ring.copy_cqe() }.unwrap();
-
-        assert_eq!(cqe_write.user_data.u64_(), 0x11111111);
-        assert_eq!(cqe_write.res, BUFFER_WRITE.len() as i32);
-        assert_eq!(cqe_write.flags, IoringCqeFlags::empty());
-
-        assert_eq!(cqe_read.user_data.u64_(), 0x22222222);
-        assert_eq!(cqe_read.res, buffer_read.len() as i32);
-        assert_eq!(cqe_read.flags, IoringCqeFlags::empty());
-
-        assert_eq!(BUFFER_WRITE, buffer_read);
-    }
-
-    #[test]
     fn writev_fsync_readv() {
         use rustix::fs::{openat, Mode, OFlags, CWD};
         let mut ring = IoUring::new(4).unwrap();
@@ -1208,5 +1161,51 @@ mod tests {
         assert_eq!(ring.cq_ready(), 0);
 
         assert_eq!(&BUFFER_WRITE[0..], &buffer_read[0..]);
+    }
+
+    #[test]
+    fn write_read() {
+        use rustix::fs::{openat, Mode, OFlags, CWD};
+        use tempfile::tempdir;
+        let mut ring = IoUring::new(2).unwrap();
+        let tmp = tempdir().unwrap();
+        let path = "test_io_uring_write_read";
+
+        let fd = openat(
+            CWD,
+            tmp.path().join(path),
+            OFlags::CREATE | OFlags::RDWR | OFlags::TRUNC,
+            Mode::RUSR | Mode::WUSR,
+        )
+        .unwrap();
+
+        const BUFFER_WRITE: [u8; 20] = [97; 20];
+        let mut buffer_read = [98u8; 20];
+
+        let mut sqe_write = ring.get_sqe().unwrap();
+        sqe_write.prep_write(0x11111111, fd.as_fd(), &BUFFER_WRITE, 10);
+        assert_eq!(sqe_write.opcode, IoringOp::Write);
+        assert_eq!(unsafe { sqe_write.off_or_addr2.off }, 10);
+        sqe_write.flags.set(IoringSqeFlags::IO_LINK, true);
+
+        let mut sqe_read = ring.get_sqe().unwrap();
+        sqe_read.prep_read(0x22222222, fd.as_fd(), &mut buffer_read, 10);
+        assert_eq!(sqe_read.opcode, IoringOp::Read);
+        assert_eq!(unsafe { sqe_read.off_or_addr2.off }, 10);
+
+        assert_eq!(unsafe { ring.submit() }, Ok(2));
+
+        let cqe_write = unsafe { ring.copy_cqe() }.unwrap();
+        let cqe_read = unsafe { ring.copy_cqe() }.unwrap();
+
+        assert_eq!(cqe_write.user_data.u64_(), 0x11111111);
+        assert_eq!(cqe_write.res, BUFFER_WRITE.len() as i32);
+        assert_eq!(cqe_write.flags, IoringCqeFlags::empty());
+
+        assert_eq!(cqe_read.user_data.u64_(), 0x22222222);
+        assert_eq!(cqe_read.res, buffer_read.len() as i32);
+        assert_eq!(cqe_read.flags, IoringCqeFlags::empty());
+
+        assert_eq!(BUFFER_WRITE, buffer_read);
     }
 }

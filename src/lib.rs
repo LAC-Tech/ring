@@ -1011,8 +1011,13 @@ mod tests {
         // https://github.com/torvalds/linux/blob/v5.4/fs/io_uring.c#L3119-L3124 vs
         // https://github.com/torvalds/linux/blob/v5.8/fs/io_uring.c#L6687-L6691
         // We therefore avoid stressing sparse fd sets here:
-        let mut registered_fds = [fd.as_raw_fd(); 1];
+        let registered_fds = [ring.fd(); 1];
         let fd_index = 0;
+        unsafe {
+            ring.register_files(&registered_fds).unwrap();
+        }
+
+        let buffer = [42u8; 128];
     }
 
     #[test]

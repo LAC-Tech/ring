@@ -1,8 +1,12 @@
 //! Pure Rust io_uring bindings that do not rely on libc, or the rust standard
-//! library. The bindings are designed to be close to liburing, while still
-//! feeling idiomatic to rust developers.
+//! library. The API is designed to be simple and straight-forward.
 //!
-//! Based on the [IoUring implementation in the Zig Standard library](https://codeberg.org/ziglang/zig/src/branch/0.15.x/lib/std/os/linux/IoUring.zig).
+//! This is a systems programming library at the same level of abstraction as
+//! `liburing`. While `unsafe` methods are kept  to a minimum,  submitting
+//! things to the linux kernel to be modified asynchronously is inherently
+//! outside rust's concept of "safety".
+//!
+//! It is based on the [IoUring implementation in the Zig Standard library](https://codeberg.org/ziglang/zig/src/branch/0.15.x/lib/std/os/linux/IoUring.zig).
 //! The only dependency in rustix, which is roughly the equivalent of Zig's
 //! `std.os`.
 

@@ -464,7 +464,7 @@ pub trait PrepSqe {
         &mut self,
         user_data: u64,
         fd: BorrowedFd,
-        iovecs: &mut [IoSliceMut<'_>],
+        iovecs: &[IoSliceMut<'_>],
         offset: u64,
     );
 
@@ -531,7 +531,7 @@ impl PrepSqe for &mut io_uring_sqe {
         &mut self,
         user_data: u64,
         fd: BorrowedFd,
-        iovecs: &mut [IoSliceMut<'_>],
+        iovecs: &[IoSliceMut<'_>],
         offset: u64,
     ) {
         self.prep_rw(
@@ -1011,13 +1011,18 @@ mod tests {
         // https://github.com/torvalds/linux/blob/v5.4/fs/io_uring.c#L3119-L3124 vs
         // https://github.com/torvalds/linux/blob/v5.8/fs/io_uring.c#L6687-L6691
         // We therefore avoid stressing sparse fd sets here:
-        let registered_fds = [ring.fd(); 1];
+        let registered_fds = [fd.as_fd(); 1];
         let fd_index = 0;
         unsafe {
             ring.register_files(&registered_fds).unwrap();
         }
 
-        let buffer = [42u8; 128];
+        let mut buffer = [42u8; 128];
+        let iovecs = [IoSliceMut::new(&mut buffer)];
+        let mut sqe = ring.get_sqe().unwrap();
+        sqe.prep_readv(0xcccccccc, fd_index, &iovecs, 0);
+        assert_eq!(sqe.opcode, IoringOp::Readv);
+        sqe.flags.set(IoringSqeFlags::FIXED_FILE, true);
     }
 
     #[test]

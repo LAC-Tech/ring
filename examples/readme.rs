@@ -1,4 +1,4 @@
-use hringas::{io_uring_cqe, IoUring, PrepSqe};
+use hringas::{io_uring_cqe, IoUring, SqeExt};
 use std::fs;
 use std::os::fd::AsFd;
 

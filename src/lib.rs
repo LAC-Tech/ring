@@ -427,10 +427,18 @@ impl IoUring {
 // IoUring.zig has top level functions like read, nop etc inside the main struct
 // But I think it's a lot more ergonomic to keep the IoUring interface small,
 // and also make it clear to people that what you are doing is mutating SQEs.
-/// Prepares SQEs to perform various syscalls when they are submitted.
-/// These all only set the relevant fields, they do not zero out everything -
-/// they are intented be called on the return value of [`IoUring::get_sqe`].
-pub trait PrepSqe {
+/// [`io_uring_sqe`] is not the most ergonomic data structure, so this is a
+/// collection of methods to set various fields. These are mostly use to set up
+/// SQE's to perform specific syscalls when submitted to the kernel.
+///
+///These all only set the relevant fields,
+/// they do not zero out everything - they are intented be called on the return
+/// value of [`IoUring::get_sqe`].
+///
+/// Mostly these follow liburing's `io_uring_accept_prep_`, but with some extra
+/// additions to avoid flag and union wrangling. syscalls when they are
+/// submitted.
+pub trait SqeExt {
     /// A no-op is more useful than may appear at first glance. For example, you
     /// could call `drain_previous_sqes()` on the returned SQE, to use the no-op
     /// to know when the ring is idle before acting on a kill signal.
@@ -451,6 +459,8 @@ pub trait PrepSqe {
         len: usize,
         offset: u64,
     );
+
+    fn set_len(&mut self, len: usize);
 
     fn prep_read(
         &mut self,
@@ -485,7 +495,7 @@ pub trait PrepSqe {
     );
 }
 
-impl PrepSqe for &mut io_uring_sqe {
+impl SqeExt for &mut io_uring_sqe {
     fn prep_nop(&mut self, user_data: u64) {
         self.opcode = IoringOp::Nop;
         self.user_data = user_data.into();
@@ -517,9 +527,13 @@ impl PrepSqe for &mut io_uring_sqe {
         self.fd = fd;
         self.addr_or_splice_off_in.addr =
             io_uring_ptr::new(addr as *mut c_void);
+        self.set_len(len);
+        self.off_or_addr2.off = offset;
+    }
+
+    fn set_len(&mut self, len: usize) {
         self.len.len =
             len.try_into().expect("io_uring requires lengths to fit in a u32");
-        self.off_or_addr2.off = offset;
     }
 
     fn prep_read(

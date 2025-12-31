@@ -480,6 +480,7 @@ pub trait SqeExt {
         flags: ReadWriteFlags,
     );
 
+    fn set_len(&mut self, len: usize);
     fn set_buf<T>(&mut self, ptr: *const T, len: usize, offset: u64);
 
     fn prep_read(
@@ -521,6 +522,15 @@ pub trait SqeExt {
         bufs: &[io::IoSlice<'_>],
         offset: u64,
     );
+
+    fn prep_splice(
+        &mut self,
+        fd_in: BorrowedFd,
+        off_in: u64,
+        fd_out: BorrowedFd,
+        off_out: u64,
+        len: usize,
+    );
 }
 
 impl SqeExt for &mut io_uring_sqe {
@@ -541,10 +551,14 @@ impl SqeExt for &mut io_uring_sqe {
         self.user_data.u64_ = user_data;
     }
 
-    fn set_buf<T>(&mut self, ptr: *const T, len: usize, offset: u64) {
-        self.addr_or_splice_off_in.addr = io_uring_ptr::new(ptr as *mut c_void);
+    fn set_len(&mut self, len: usize) {
         self.len.len =
             len.try_into().expect("io_uring requires lengths to fit in a u32");
+    }
+
+    fn set_buf<T>(&mut self, ptr: *const T, len: usize, offset: u64) {
+        self.addr_or_splice_off_in.addr = io_uring_ptr::new(ptr as *mut c_void);
+        self.set_len(len);
         self.off_or_addr2.off = offset;
     }
 
@@ -614,6 +628,23 @@ impl SqeExt for &mut io_uring_sqe {
         self.fd = fd.as_raw_fd();
         self.set_buf(iovecs.as_ptr(), iovecs.len(), offset);
         self.user_data.u64_ = user_data;
+    }
+
+    fn prep_splice(
+        &mut self,
+        fd_in: BorrowedFd,
+        off_in: u64,
+        fd_out: BorrowedFd,
+        off_out: u64,
+        len: usize,
+    ) {
+        self.opcode = IoringOp::Splice;
+        self.fd = fd_out.as_raw_fd();
+        self.set_len(len);
+        self.off_or_addr2.off = off_out;
+        self.addr_or_splice_off_in.splice_off_in = off_in;
+        self.splice_fd_in_or_file_index_or_addr_len.splice_fd_in =
+            fd_in.as_raw_fd();
     }
 }
 

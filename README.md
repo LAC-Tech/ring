@@ -10,7 +10,7 @@
 | nop                                            | ✅     |
 | readv                                          | ✅     |
 | writev/fsync/readv                             | ✅     |
-| write/read                                     | ❌     |
+| write/read                                     | ✅     |
 | splice/read                                    | ❌     |
 | write_fixed/read_fixed                         | ❌     |
 | openat                                         | ❌     |

@@ -525,6 +525,7 @@ pub trait SqeExt {
 
     fn prep_splice(
         &mut self,
+        user_data: u64,
         fd_in: BorrowedFd,
         off_in: u64,
         fd_out: BorrowedFd,
@@ -632,6 +633,7 @@ impl SqeExt for &mut io_uring_sqe {
 
     fn prep_splice(
         &mut self,
+        user_data: u64,
         fd_in: BorrowedFd,
         off_in: u64,
         fd_out: BorrowedFd,
@@ -645,6 +647,7 @@ impl SqeExt for &mut io_uring_sqe {
         self.addr_or_splice_off_in.splice_off_in = off_in;
         self.splice_fd_in_or_file_index_or_addr_len.splice_fd_in =
             fd_in.as_raw_fd();
+        self.user_data.u64_ = user_data;
     }
 }
 

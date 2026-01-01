@@ -46,11 +46,13 @@ const U32_SIZE: u32 = mem::size_of::<u32>() as u32;
 const CQE_SIZE: u32 = mem::size_of::<io_uring_cqe>() as u32;
 const SQE_SIZE: u32 = mem::size_of::<io_uring_sqe>() as u32;
 
-// A lot of this was done at runtime by IoUring.zig, but because this is a 3rd
-// party library we can be more aggressive about preventing compilation
+const _: () = assert!(U32_SIZE == 4); // rofl why not
+
+// Taken from the zig test "structs/offsets/entries"
+// Because this is a 3rd party lib we can be more aggressive about preventing
+// compilation.
 const _: () = {
     assert!(mem::size_of::<io_uring_params>() == 120);
-    assert!(U32_SIZE == 4); // rofl why not
     assert!(SQE_SIZE == 64);
     assert!(CQE_SIZE == 16);
 
@@ -997,6 +999,10 @@ mod err {
     }
 }
 
+#[cfg(test)]
+mod test {}
+
+// From IoUring.zig
 #[cfg(test)]
 mod zig_tests {
     use super::*;

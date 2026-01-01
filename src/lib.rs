@@ -24,6 +24,7 @@ pub use rustix::io_uring::{
 };
 
 use core::ffi::c_void;
+use core::mem::zeroed;
 use core::ptr::null;
 use core::sync::atomic::Ordering;
 use core::{assert, assert_eq, assert_ne, cmp, mem, ptr};
@@ -31,10 +32,11 @@ use mmap::RwMmap;
 use rustix::fd::{AsFd, AsRawFd, OwnedFd};
 use rustix::io;
 use rustix::io_uring::{
-    io_cqring_offsets, io_sqring_offsets, io_uring_enter, io_uring_ptr,
-    io_uring_register, io_uring_setup, IoringFeatureFlags, IoringRegisterOp,
-    IoringSetupFlags, IoringSqFlags, IoringSqeFlags, IORING_OFF_CQ_RING,
-    IORING_OFF_SQES, IORING_OFF_SQ_RING,
+    addr_or_splice_off_in_union, io_cqring_offsets, io_sqring_offsets,
+    io_uring_enter, io_uring_ptr, io_uring_register, io_uring_setup, len_union,
+    off_or_addr2_union, IoringFeatureFlags, IoringRegisterOp, IoringSetupFlags,
+    IoringSqFlags, IoringSqeFlags, IORING_OFF_CQ_RING, IORING_OFF_SQES,
+    IORING_OFF_SQ_RING,
 };
 use rustix::mm;
 
@@ -99,6 +101,39 @@ impl IoUring {
         if !entries.is_power_of_two() {
             return Err(EntriesNotPowerOfTwo);
         }
+
+        // It is rust's fault - not mine - that `Default::default()` cannot be
+        // done at compile time, and so must be a runtime check.
+        unsafe {
+            let default = io_uring_sqe::default();
+            let zeroed: io_uring_sqe = mem::zeroed();
+
+            let zeroed_bytes = core::slice::from_raw_parts(
+                &zeroed as *const _ as *const u8,
+                mem::size_of::<io_uring_sqe>(),
+            );
+            let default_bytes = core::slice::from_raw_parts(
+                &default as *const _ as *const u8,
+                mem::size_of::<io_uring_sqe>(),
+            );
+            assert_eq!(zeroed_bytes, default_bytes);
+        }
+
+        /*
+        pub opcode: IoringOp,
+        pub flags: IoringSqeFlags,
+        pub ioprio: ioprio_union,
+        pub fd: RawFd,
+        pub off_or_addr2: off_or_addr2_union,
+        pub addr_or_splice_off_in: addr_or_splice_off_in_union,
+        pub len: len_union,
+        pub op_flags: op_flags_union,
+        pub user_data: io_uring_user_data,
+        pub buf: buf_union,
+        pub personality: u16,
+        pub splice_fd_in_or_file_index_or_addr_len: splice_fd_in_or_file_index_or_addr_len_union,
+        pub addr3_or_cmd: addr3_or_cmd_union,
+        */
 
         assert_eq!(p.sq_entries, 0);
         assert!(
@@ -451,6 +486,200 @@ impl IoUring {
             Err(errno) => Err(Unregister::UnexpectedErrno(errno)),
         }
     }
+}
+
+/// Helper functions for creating SQE's.
+///
+/// I am deliberately deviating from the Zig approach of having top level
+/// functions like `read` etc for the following reasons:
+///
+/// - it clutters up the API, you have dozens of functions for different
+///   syscalls intermingled with functions for managing the io_uring
+/// - it's very mutable; it doesn't facilitate "capturing the sqe for later". If
+///   you look at tigerbeetle's source code you can see they resort to the prep_
+///   methods to do just this
+/// - doing it declaratively is just as efficient is prep methods, all of which
+///   have to create a brand new sqe from scratch
+/// - it lets me combine the action of getting, and preparing, a vacant sqe in
+///   one method, that can have a unified error type. it can also just return
+///   void; no more multiple references to some sqe
+pub mod sqe {
+    use super::*;
+    //  I am sorry clippy but I am not writing `IoRingOp` dozens of times
+    use rustix::io_uring::addr_or_splice_off_in_union;
+    use IoringOp::*;
+    pub const ZEROED: io_uring_sqe = unsafe { mem::zeroed() };
+
+    pub fn nop(user_data: u64) -> io_uring_sqe {
+        io_uring_sqe {
+            opcode: Nop,
+            user_data: user_data.into(),
+            ..unsafe { mem::zeroed() }
+        }
+    }
+
+    pub fn fsync(user_data: u64) -> io_uring_sqe {
+        io_uring_sqe {
+            opcode: Nop,
+            user_data: user_data.into(),
+            ..unsafe { mem::zeroed() }
+        }
+    }
+
+    // TODO: return Err?
+    fn to_len(len: usize) -> len_union {
+        len_union {
+            len: len
+                .try_into()
+                .expect("io_uring requires lengths to fit in a u32"),
+        }
+    }
+
+    // TODO: return Err?
+    fn to_addr<T>(ptr: *const T) -> addr_or_splice_off_in_union {
+        let addr = io_uring_ptr::new(ptr as *mut c_void);
+        addr_or_splice_off_in_union { addr }
+    }
+
+    // TODO: return Err?
+    fn off_off(offset: u64) -> off_or_addr2_union {
+        off_or_addr2_union { off: offset }
+    }
+
+    fn file_index_to_fd(i: usize) -> i32 {
+        i.try_into().expect("fixed file index must fit into a i32")
+    }
+
+    pub fn read(
+        user_data: u64,
+        fd: BorrowedFd,
+        buf: &mut [u8],
+        offset: u64,
+    ) -> io_uring_sqe {
+        io_uring_sqe {
+            opcode: Read,
+            fd: fd.as_raw_fd(),
+            addr_or_splice_off_in: to_addr(buf.as_ptr()),
+            len: to_len(buf.len()),
+            off_or_addr2: off_off(offset),
+            user_data: user_data.into(),
+            ..unsafe { mem::zeroed() }
+        }
+    }
+
+    pub fn readv(
+        user_data: u64,
+        fd: BorrowedFd,
+        iovecs: &[IoSliceMut<'_>],
+        offset: u64,
+    ) -> io_uring_sqe {
+        io_uring_sqe {
+            opcode: Read,
+            fd: fd.as_raw_fd(),
+            addr_or_splice_off_in: to_addr(iovecs.as_ptr()),
+            len: to_len(iovecs.len()),
+            off_or_addr2: off_off(offset),
+            user_data: user_data.into(),
+            ..unsafe { mem::zeroed() }
+        }
+    }
+
+    pub fn readv_fixed_file(
+        user_data: u64,
+        file_index: usize,
+        iovecs: &[IoSliceMut<'_>],
+        offset: u64,
+    ) -> io_uring_sqe {
+        io_uring_sqe {
+            opcode: Readv,
+            fd: file_index_to_fd(file_index),
+            addr_or_splice_off_in: to_addr(iovecs.as_ptr()),
+            len: to_len(iovecs.len()),
+            off_or_addr2: off_off(offset),
+            flags: IoringSqeFlags::FIXED_FILE,
+            user_data: user_data.into(),
+            ..unsafe { mem::zeroed() }
+        }
+    }
+
+    pub fn write(
+        user_data: u64,
+        fd: BorrowedFd,
+        buf: &[u8],
+        offset: u64,
+    ) -> io_uring_sqe {
+        io_uring_sqe {
+            opcode: Write,
+            fd: fd.as_raw_fd(),
+            addr_or_splice_off_in: to_addr(buf.as_ptr()),
+            len: to_len(buf.len()),
+            off_or_addr2: off_off(offset),
+            user_data: user_data.into(),
+            ..unsafe { mem::zeroed() }
+        }
+    }
+
+    fn prep_writev(
+        user_data: u64,
+        fd: BorrowedFd,
+        iovecs: &[IoSlice<'_>],
+        offset: u64,
+    ) -> io_uring_sqe {
+        io_uring_sqe {
+            opcode: Writev,
+            fd: fd.as_raw_fd(),
+            addr_or_splice_off_in: to_addr(iovecs.as_ptr()),
+            len: to_len(iovecs.len()),
+            off_or_addr2: off_off(offset),
+            user_data: user_data.into(),
+            ..unsafe { mem::zeroed() }
+        }
+    }
+
+    fn prep_splice(
+        user_data: u64,
+        fd_in: BorrowedFd,
+        off_in: u64,
+        fd_out: BorrowedFd,
+        off_out: u64,
+        len: usize,
+    ) -> io_uring_sqe {
+        io_uring_sqe {
+            opcode: Splice,
+            fd: fd_out.as_raw_fd(),
+            addr_or_splice_off_in: addr_or_splice_off_in_union {
+                splice_off_in: off_in,
+            },
+            off_or_addr2: off_or_addr2_union { off: off_out },
+            splice_fd_in_or_file_index_or_addr_len:
+                rustix::io_uring::splice_fd_in_or_file_index_or_addr_len_union {
+                    splice_fd_in: fd_in.as_raw_fd(),
+                },
+            len: to_len(len),
+            user_data: user_data.into(),
+            ..unsafe { mem::zeroed() }
+        }
+    }
+    /*
+    fn prep_splice(
+        &mut self,
+        user_data: u64,
+        fd_in: BorrowedFd,
+        off_in: u64,
+        fd_out: BorrowedFd,
+        off_out: u64,
+        len: usize,
+    ) {
+        self.opcode = IoringOp::Splice;
+        self.fd = fd_out.as_raw_fd();
+        self.set_len(len);
+        self.off_or_addr2.off = off_out;
+        self.addr_or_splice_off_in.splice_off_in = off_in;
+        self.splice_fd_in_or_file_index_or_addr_len.splice_fd_in =
+            fd_in.as_raw_fd();
+        self.user_data.u64_ = user_data;
+    }
+    */
 }
 
 // IoUring.zig has top level functions like read, nop etc inside the main struct

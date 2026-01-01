@@ -13,5 +13,10 @@ categories = ["api-bindings", "asynchronous", "concurrency", "no-std",
 rustix = { version = "1.1.2", features = ["io_uring", "mm"] }
 
 [dev-dependencies]
+criterion = { version = "0.8.1", features = ["html_reports"] }
 pretty_assertions = "1.4.1"
 tempfile = "3.24.0"
+
+[[bench]]
+name = "sqe_construction"
+harness = false   # required for criterion

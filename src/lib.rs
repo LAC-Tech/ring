@@ -998,7 +998,7 @@ mod err {
 }
 
 #[cfg(test)]
-mod tests {
+mod zig_tests {
     use super::*;
     use err::*;
     use pretty_assertions::assert_eq;

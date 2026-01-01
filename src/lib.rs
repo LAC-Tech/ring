@@ -619,7 +619,7 @@ pub mod sqe {
         }
     }
 
-    fn prep_writev(
+    pub fn writev(
         user_data: u64,
         fd: BorrowedFd,
         iovecs: &[IoSlice<'_>],
@@ -636,7 +636,7 @@ pub mod sqe {
         }
     }
 
-    fn prep_splice(
+    pub fn splice(
         user_data: u64,
         fd_in: BorrowedFd,
         off_in: u64,
@@ -660,26 +660,6 @@ pub mod sqe {
             ..unsafe { mem::zeroed() }
         }
     }
-    /*
-    fn prep_splice(
-        &mut self,
-        user_data: u64,
-        fd_in: BorrowedFd,
-        off_in: u64,
-        fd_out: BorrowedFd,
-        off_out: u64,
-        len: usize,
-    ) {
-        self.opcode = IoringOp::Splice;
-        self.fd = fd_out.as_raw_fd();
-        self.set_len(len);
-        self.off_or_addr2.off = off_out;
-        self.addr_or_splice_off_in.splice_off_in = off_in;
-        self.splice_fd_in_or_file_index_or_addr_len.splice_fd_in =
-            fd_in.as_raw_fd();
-        self.user_data.u64_ = user_data;
-    }
-    */
 }
 
 // IoUring.zig has top level functions like read, nop etc inside the main struct

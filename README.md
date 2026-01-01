@@ -1,6 +1,4 @@
-[docs](https://docs.rs/hringas/latest/hringas/)
-
-[example](/examples/readme.rs)
+# ᚻᚱᛁᚾᚷᚨᛋ
 
 Low-level IoUring bindings in pure rust.
 
@@ -9,6 +7,10 @@ Low-level IoUring bindings in pure rust.
 - simple API
 
 It's heavily based off of std.os.linux.IoUring.zig, but also takes some pointers (lol) from liburing.
+
+[docs](https://docs.rs/hringas/latest/hringas/)
+
+[example](/examples/readme.rs)
 
 ⚠️ **WIP, not all tests have been implemented yet** ⚠️
 

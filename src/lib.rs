@@ -488,8 +488,8 @@ impl IoUring {
 pub trait SqeExt {
     // Pure convenience functions. So far only used in tests but might be useful
     // for the user?
-    unsafe fn addr(&self) -> io_uring_ptr;
-    unsafe fn off(&self) -> u64;
+    fn addr(&self) -> io_uring_ptr;
+    fn off(&self) -> u64;
 
     /// A no-op is more useful than may appear at first glance. For example, you
     /// could call `drain_previous_sqes()` on the returned SQE, to use the no-op
@@ -558,12 +558,14 @@ pub trait SqeExt {
 }
 
 impl SqeExt for &mut io_uring_sqe {
-    unsafe fn addr(&self) -> io_uring_ptr {
-        self.addr_or_splice_off_in.addr
+    fn addr(&self) -> io_uring_ptr {
+        // SAFETY: All the fields have the same underlying representation.
+        unsafe { self.addr_or_splice_off_in.addr }
     }
 
-    unsafe fn off(&self) -> u64 {
-        self.off_or_addr2.off
+    fn off(&self) -> u64 {
+        // SAFETY: All the fields have the same underlying representation.
+        unsafe { self.off_or_addr2.off }
     }
 
     fn prep_nop(&mut self, user_data: u64) {

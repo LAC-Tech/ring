@@ -1061,6 +1061,7 @@ mod zig_tests {
     };
     use tempfile::tempdir;
 
+    // Much of what is tested here in Zig, we do statically
     #[test]
     fn entries() {
         assert_eq!(Init::EntriesZero, IoUring::new(0).unwrap_err());

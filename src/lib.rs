@@ -1019,7 +1019,11 @@ mod test {
 
         let cqe1 = unsafe { ring.copy_cqe() }.unwrap();
         let cqe2 = unsafe { ring.copy_cqe() }.unwrap();
-        assert_ne!(cqe1.user_data.u64_(), cqe2.user_data.u64_());
+        assert_ne!(
+            cqe1.user_data.u64_(),
+            cqe2.user_data.u64_(),
+            "both submitted sqes had different user data"
+        );
     }
 }
 

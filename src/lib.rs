@@ -486,6 +486,11 @@ impl IoUring {
 /// additions to avoid flag and union wrangling. syscalls when they are
 /// submitted.
 pub trait SqeExt {
+    // Pure convenience functions. So far only used in tests but might be useful
+    // for the user?
+    unsafe fn addr(&self) -> io_uring_ptr;
+    unsafe fn off(&self) -> u64;
+
     /// A no-op is more useful than may appear at first glance. For example, you
     /// could call `drain_previous_sqes()` on the returned SQE, to use the no-op
     /// to know when the ring is idle before acting on a kill signal.
@@ -553,6 +558,14 @@ pub trait SqeExt {
 }
 
 impl SqeExt for &mut io_uring_sqe {
+    unsafe fn addr(&self) -> io_uring_ptr {
+        self.addr_or_splice_off_in.addr
+    }
+
+    unsafe fn off(&self) -> u64 {
+        self.off_or_addr2.off
+    }
+
     fn prep_nop(&mut self, user_data: u64) {
         self.opcode = IoringOp::Nop;
         self.user_data = user_data.into();
@@ -1098,11 +1111,8 @@ mod zig_tests {
             ioprio_to_u16(ioprio_union::default())
         );
         assert_eq!(sqe.fd, 0);
-        assert_eq!(unsafe { sqe.off_or_addr2.off }, 0);
-        assert_eq!(
-            unsafe { sqe.addr_or_splice_off_in.addr },
-            io_uring_ptr::null()
-        );
+        assert_eq!(unsafe { sqe.off() }, 0);
+        assert_eq!(unsafe { sqe.addr() }, io_uring_ptr::null());
         assert_eq!(
             // This isn't even a union in the C struct??
             unsafe { sqe.len.len },
@@ -1211,7 +1221,7 @@ mod zig_tests {
             let mut sqe = ring.get_sqe().unwrap();
             sqe.prep_writev(0xdddddddd, fd.as_fd(), &iovecs_write, 17);
             assert_eq!(sqe.opcode, IoringOp::Writev);
-            assert_eq!(unsafe { sqe.off_or_addr2.off }, 17);
+            assert_eq!(unsafe { sqe.off() }, 17);
             sqe.flags.set(IoringSqeFlags::IO_LINK, true);
         }
         {
@@ -1225,7 +1235,7 @@ mod zig_tests {
             let mut sqe = ring.get_sqe().unwrap();
             sqe.prep_readv(0xffffffff, fd.as_fd(), &mut iovecs_read, 17);
             assert_eq!(sqe.opcode, IoringOp::Readv);
-            assert_eq!(unsafe { sqe.off_or_addr2.off }, 17);
+            assert_eq!(unsafe { sqe.off() }, 17);
         }
 
         assert_eq!(ring.sq_ready(), 3);
@@ -1267,13 +1277,13 @@ mod zig_tests {
         let mut sqe_write = ring.get_sqe().unwrap();
         sqe_write.prep_write(0x11111111, fd.as_fd(), &BUFFER_WRITE, 10);
         assert_eq!(sqe_write.opcode, IoringOp::Write);
-        assert_eq!(unsafe { sqe_write.off_or_addr2.off }, 10);
+        assert_eq!(unsafe { sqe_write.off() }, 10);
         sqe_write.flags.set(IoringSqeFlags::IO_LINK, true);
 
         let mut sqe_read = ring.get_sqe().unwrap();
         sqe_read.prep_read(0x22222222, fd.as_fd(), &mut buffer_read, 10);
         assert_eq!(sqe_read.opcode, IoringOp::Read);
-        assert_eq!(unsafe { sqe_read.off_or_addr2.off }, 10);
+        assert_eq!(unsafe { sqe_read.off() }, 10);
 
         assert_eq!(unsafe { ring.submit() }, Ok(2));
 
@@ -1320,11 +1330,8 @@ mod zig_tests {
                 buffer_write.len(),
             );
             assert_eq!(sqe.opcode, IoringOp::Splice);
-            assert_eq!(
-                unsafe { sqe.addr_or_splice_off_in.addr },
-                io_uring_ptr::null()
-            );
-            assert_eq!(unsafe { sqe.off_or_addr2.off }, pipe_offset);
+            assert_eq!(unsafe { sqe.addr() }, io_uring_ptr::null());
+            assert_eq!(unsafe { sqe.off() }, pipe_offset);
             sqe.flags.set(IoringSqeFlags::IO_LINK, true);
         }
 
@@ -1340,10 +1347,10 @@ mod zig_tests {
             );
             assert_eq!(sqe.opcode, IoringOp::Splice);
             assert_eq!(
-                unsafe { sqe.addr_or_splice_off_in.addr },
+                unsafe { sqe.addr() },
                 io_uring_ptr::new(pipe_offset as *mut c_void)
             );
-            assert_eq!(unsafe { sqe.off_or_addr2.off }, 10);
+            assert_eq!(unsafe { sqe.off() }, 10);
         }
     }
 }

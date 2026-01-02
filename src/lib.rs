@@ -1060,7 +1060,7 @@ mod zig_tests {
         // TODO: the only place we use these constants, is in these tests?
         io_uring::{io_uring_ptr, ioprio_union, IoringOp, IoringSqeFlags},
     };
-    use tempfile::tempdir;
+    use tempfile::{tempdir, TempDir};
 
     // Much of what is tested here in Zig, we do statically
     #[test]
@@ -1073,6 +1073,16 @@ mod zig_tests {
     fn ioprio_to_u16(i: ioprio_union) -> u16 {
         // 100% safe, 'cause Stone Cold said so
         unsafe { mem::transmute::<_, u16>(i) }
+    }
+
+    fn temp_file(dir: &TempDir, path: &'static str) -> OwnedFd {
+        openat(
+            CWD,
+            dir.path().join(path),
+            OFlags::CREATE | OFlags::RDWR | OFlags::TRUNC,
+            Mode::RUSR | Mode::WUSR,
+        )
+        .unwrap()
     }
 
     #[test]
@@ -1187,16 +1197,9 @@ mod zig_tests {
     #[test]
     fn writev_fsync_readv() {
         let mut ring = IoUring::new(4).unwrap();
-        let tmp = tempdir().unwrap();
-        let path = "test_io_uring_writev_fsync_readv";
 
-        let fd = openat(
-            CWD,
-            tmp.path().join(path),
-            OFlags::CREATE | OFlags::RDWR | OFlags::TRUNC,
-            Mode::RUSR | Mode::WUSR,
-        )
-        .unwrap();
+        let tmp = tempdir().unwrap();
+        let fd = temp_file(&tmp, "test_io_uring_writev_fsync_readv");
 
         const BUFFER_WRITE: [u8; 128] = [42; 128];
         let iovecs_write = [IoSlice::new(&BUFFER_WRITE)];
@@ -1256,15 +1259,7 @@ mod zig_tests {
         use tempfile::tempdir;
         let mut ring = IoUring::new(2).unwrap();
         let tmp = tempdir().unwrap();
-        let path = "test_io_uring_write_read";
-
-        let fd = openat(
-            CWD,
-            tmp.path().join(path),
-            OFlags::CREATE | OFlags::RDWR | OFlags::TRUNC,
-            Mode::RUSR | Mode::WUSR,
-        )
-        .unwrap();
+        let fd = temp_file(&tmp, "test_io_uring_write_read");
 
         const BUFFER_WRITE: [u8; 20] = [97; 20];
         let mut buffer_read = [98u8; 20];
@@ -1301,22 +1296,8 @@ mod zig_tests {
         let mut ring = IoUring::new(4).unwrap();
 
         let tmp = tempdir().unwrap();
-
-        let fd_src = openat(
-            CWD,
-            tmp.path().join("test_io_uring_splice_src"),
-            OFlags::CREATE | OFlags::RDWR | OFlags::TRUNC,
-            Mode::RUSR | Mode::WUSR,
-        )
-        .unwrap();
-
-        let fd_dest = openat(
-            CWD,
-            tmp.path().join("test_io_uring_splice_dst"),
-            OFlags::CREATE | OFlags::RDWR | OFlags::TRUNC,
-            Mode::RUSR | Mode::WUSR,
-        )
-        .unwrap();
+        let fd_src = temp_file(&tmp, "test_io_uring_splice_src");
+        let fd_dest = temp_file(&tmp, "test_io_uring_splice_dst");
 
         let buffer_write = [97u8; 20];
         let mut buffer_read = [98u8; 20];

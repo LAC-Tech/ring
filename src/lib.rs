@@ -869,24 +869,13 @@ impl CompletionQueue {
         // since big_cqe never seems to be read we shall copy it anyway
         {
             let head = head as usize;
-            let src = ring_cqes[head..head + n].as_ptr();
-            let dst = cqes.as_mut_ptr();
-            // SAFETY: We have validated the bounds and established that the
-            // source and destination are valid for the copy.
-            unsafe {
-                ptr::copy_nonoverlapping(src, dst, n);
-            }
+            cqes[..n].clone_from_slice(&ring_cqes[head..head + n]);
         }
 
         if count as usize > n {
             // wrap self.cq.cqes
             let w = count as usize - n;
-            let src = ring_cqes[0..w].as_ptr();
-            let dst = cqes[n..n + w].as_mut_ptr();
-            // SAFETY: We have validated the bounds.
-            unsafe {
-                ptr::copy_nonoverlapping(src, dst, w);
-            }
+            cqes[n..n + w].clone_from_slice(&ring_cqes[0..w]);
         }
 
         let count: u32 = count

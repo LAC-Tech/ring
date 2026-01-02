@@ -19,8 +19,7 @@ pub use rustix;
 pub use rustix::fd::BorrowedFd;
 pub use rustix::io::{IoSlice, IoSliceMut};
 pub use rustix::io_uring::{
-    io_uring_cqe, io_uring_params, io_uring_sqe, IoringEnterFlags, IoringOp,
-    ReadWriteFlags,
+    io_uring_params, io_uring_sqe, IoringEnterFlags, IoringOp, ReadWriteFlags,
 };
 
 use core::ffi::c_void;
@@ -32,9 +31,9 @@ use rustix::fd::{AsFd, AsRawFd, OwnedFd};
 use rustix::io;
 use rustix::io_uring::{
     io_cqring_offsets, io_sqring_offsets, io_uring_enter, io_uring_ptr,
-    io_uring_register, io_uring_setup, IoringFeatureFlags, IoringRegisterOp,
-    IoringSetupFlags, IoringSqFlags, IoringSqeFlags, IORING_OFF_CQ_RING,
-    IORING_OFF_SQES, IORING_OFF_SQ_RING,
+    io_uring_register, io_uring_setup, io_uring_user_data, IoringCqeFlags,
+    IoringFeatureFlags, IoringRegisterOp, IoringSetupFlags, IoringSqFlags,
+    IoringSqeFlags, IORING_OFF_CQ_RING, IORING_OFF_SQES, IORING_OFF_SQ_RING,
 };
 use rustix::mm;
 
@@ -43,7 +42,7 @@ const _: () = assert!(usize::BITS >= 32);
 
 // I am constantly using these - makes it a little bit cleaner
 const U32_SIZE: u32 = mem::size_of::<u32>() as u32;
-const CQE_SIZE: u32 = mem::size_of::<io_uring_cqe>() as u32;
+const CQE_SIZE: u32 = mem::size_of::<Cqe>() as u32;
 const SQE_SIZE: u32 = mem::size_of::<io_uring_sqe>() as u32;
 
 const _: () = assert!(U32_SIZE == 4); // rofl why not
@@ -60,6 +59,18 @@ const _: () = {
     assert!(IORING_OFF_CQ_RING == 0x8000000);
     assert!(IORING_OFF_SQES == 0x10000000);
 };
+
+/// An io_uring Completion Queue Entry.
+///
+/// While rustix provides one, it has some issues:
+/// https://github.com/bytecodealliance/rustix/issues/1568
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub struct Cqe {
+    pub user_data: io_uring_user_data,
+    pub res: i32,
+    pub flags: IoringCqeFlags,
+}
 
 #[derive(Debug)]
 pub struct IoUring {
@@ -352,7 +363,7 @@ impl IoUring {
     /// May call [`Self::enter`].
     pub unsafe fn copy_cqes(
         &mut self,
-        cqes: &mut [io_uring_cqe],
+        cqes: &mut [Cqe],
         wait_nr: u32,
     ) -> Result<u32, err::Enter> {
         let count = self.cq.copy_ready_events(&mut self.mmap, cqes);
@@ -374,8 +385,8 @@ impl IoUring {
     /// # Safety
     ///
     /// May call [`Self::enter`].
-    pub unsafe fn copy_cqe(&mut self) -> Result<io_uring_cqe, err::Enter> {
-        let mut cqes = [io_uring_cqe::default(); 1];
+    pub unsafe fn copy_cqe(&mut self) -> Result<Cqe, err::Enter> {
+        let mut cqes = [Cqe::default(); 1];
         loop {
             let count = self.copy_cqes(&mut cqes, 1)?;
             if count > 0 {
@@ -383,7 +394,7 @@ impl IoUring {
                 // `big_cqe: IncompleteArrayField<u64>`
                 // TODO: I hate this whole implementation. Come up with
                 // something better
-                return Ok(ptr::read(&raw const cqes[0]));
+                return Ok(cqes[0]);
             }
         }
     }
@@ -399,7 +410,8 @@ impl IoUring {
     /// zero-copy CQE has been processed by your application.
     /// Not idempotent, calling more than once will result in other CQEs being
     /// lost. Matches the implementation of cqe_seen() in liburing.
-    pub fn cqe_seen(&mut self, _cqe: *const io_uring_cqe) {
+    // TODO: const pointer param? not using it? review this..
+    pub fn cqe_seen(&mut self, _cqe: *const Cqe) {
         self.cq.advance(&mut self.mmap, 1);
     }
 
@@ -836,7 +848,7 @@ impl CompletionQueue {
     fn copy_ready_events(
         &mut self,
         mmap: &mut RwMmap,
-        cqes: &mut [io_uring_cqe],
+        cqes: &mut [Cqe],
     ) -> u32 {
         let ready = self.ready(mmap);
         let count = cmp::min(cqes.len(), ready as usize);
@@ -846,9 +858,8 @@ impl CompletionQueue {
         let n = cmp::min((self.entries - head) as usize, count);
 
         // SAFETY: Offset and entries provided by kernel.
-        let ring_cqes = unsafe {
-            mmap.slice_at::<io_uring_cqe>(self.off.cqes, self.entries)
-        };
+        let ring_cqes =
+            unsafe { mmap.slice_at::<Cqe>(self.off.cqes, self.entries) };
 
         // io_uring_cqe is not copyable; it has an array field "big_cqe"
         // since big_cqe never seems to be read we shall copy it anyway
@@ -903,6 +914,7 @@ mod err {
         /// prohibits io_uring syscalls:
         PermissionDenied,
         SystemOutdated,
+        OpUringCmdNotSupported,
         UnexpectedErrno(Errno),
     }
 
@@ -1000,12 +1012,29 @@ mod err {
 }
 
 #[cfg(test)]
-mod test {
+mod test_ioring_op_uring_cmd {
     use super::*;
+    use err::*;
     use pretty_assertions::{assert_eq, assert_ne};
 
+    // Testing it at least prevents us getting in this situation
+    #[test]
+    fn panics_on_cqe_c32_setup_flag() {
+        let mut params = io_uring_params::default();
+        params.flags.set(IoringSetupFlags::CQE32, true);
+
+        let mut ring = IoUring::new_with_params(2, &mut params);
+
+        assert!(
+            matches!(ring, Err(Init::OpUringCmdNotSupported)),
+            "attempt to construct ring with CQE32 flag not caught"
+        );
+    }
+
+    // This broken in Zig too:
     // https://codeberg.org/ziglang/zig/issues/30649
     #[test]
+    #[ignore]
     fn handles_32bit_sqes() {
         let mut params = io_uring_params::default();
         params.flags.set(IoringSetupFlags::CQE32, true);
@@ -1150,10 +1179,10 @@ mod zig_tests {
         assert!(sqe.flags.contains(IoringSqeFlags::FIXED_FILE));
 
         // Hack because Ok branch does not implement debug..
-        match ring.get_sqe() {
-            Err(GetSqe::SubmissionQueueFull) => {}
-            _ => panic!("expect submission queue to be full"),
-        }
+        assert!(
+            matches!(ring.get_sqe(), Err(GetSqe::SubmissionQueueFull)),
+            "expected submission queue to be full"
+        );
         assert_eq!(unsafe { ring.submit() }, Ok(1));
         let cqe = unsafe { ring.copy_cqe() }.unwrap();
         assert_eq!(cqe.user_data.u64_(), 0xcccccccc);

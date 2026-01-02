@@ -1,4 +1,4 @@
-use hringas::{io_uring_cqe, IoUring, SqeExt};
+use hringas::{Cqe, IoUring, SqeExt};
 use std::fs;
 use std::os::fd::AsFd;
 
@@ -13,7 +13,7 @@ fn main() {
 
     // Note that the developer needs to ensure
     // that the entry pushed into submission queue is valid (e.g. fd, buffer).
-    let io_uring_cqe { user_data, res, .. } = unsafe {
+    let Cqe { user_data, res, .. } = unsafe {
         ring.submit_and_wait(1).expect("completion queue is empty");
         ring.copy_cqe().unwrap()
     };

@@ -1,7 +1,7 @@
 #![no_std]
 use hringas::rustix::fs::{openat, Mode, OFlags, CWD};
 use hringas::rustix::io::Errno;
-use hringas::{io_uring_cqe, IoUring, SqeExt};
+use hringas::{Cqe, IoUring, SqeExt};
 use rustix::fd::AsFd;
 
 fn main() {
@@ -15,7 +15,7 @@ fn main() {
 
     // Note that the developer needs to ensure
     // that the entry pushed into submission queue is valid (e.g. fd, buffer).
-    let io_uring_cqe { user_data, res, .. } = unsafe {
+    let Cqe { user_data, res, .. } = unsafe {
         ring.submit_and_wait(1).expect("completion queue is empty");
         ring.copy_cqe().unwrap()
     };

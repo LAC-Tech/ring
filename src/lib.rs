@@ -1055,6 +1055,7 @@ mod zig_tests {
     use super::*;
     use err::*;
     use pretty_assertions::assert_eq;
+    use rustix::fs::{openat, Mode, OFlags, CWD};
     use rustix::{
         // TODO: the only place we use these constants, is in these tests?
         io_uring::{io_uring_ptr, ioprio_union, IoringOp, IoringSqeFlags},
@@ -1145,7 +1146,6 @@ mod zig_tests {
 
     #[test]
     fn readv() {
-        use rustix::fs::{openat, Mode, OFlags, CWD};
         let mut ring = IoUring::new(1).unwrap();
         let fd =
             openat(CWD, "/dev/zero", OFlags::RDONLY, Mode::empty()).unwrap();
@@ -1186,7 +1186,6 @@ mod zig_tests {
 
     #[test]
     fn writev_fsync_readv() {
-        use rustix::fs::{openat, Mode, OFlags, CWD};
         let mut ring = IoUring::new(4).unwrap();
         let tmp = tempdir().unwrap();
         let path = "test_io_uring_writev_fsync_readv";
@@ -1254,7 +1253,6 @@ mod zig_tests {
 
     #[test]
     fn write_read() {
-        use rustix::fs::{openat, Mode, OFlags, CWD};
         use tempfile::tempdir;
         let mut ring = IoUring::new(2).unwrap();
         let tmp = tempdir().unwrap();
@@ -1296,5 +1294,75 @@ mod zig_tests {
         assert_eq!(cqe_read.flags, IoringCqeFlags::empty());
 
         assert_eq!(BUFFER_WRITE, buffer_read);
+    }
+
+    #[test]
+    fn splice_read() {
+        let mut ring = IoUring::new(4).unwrap();
+
+        let tmp = tempdir().unwrap();
+
+        let fd_src = openat(
+            CWD,
+            tmp.path().join("test_io_uring_splice_src"),
+            OFlags::CREATE | OFlags::RDWR | OFlags::TRUNC,
+            Mode::RUSR | Mode::WUSR,
+        )
+        .unwrap();
+
+        let fd_dest = openat(
+            CWD,
+            tmp.path().join("test_io_uring_splice_dst"),
+            OFlags::CREATE | OFlags::RDWR | OFlags::TRUNC,
+            Mode::RUSR | Mode::WUSR,
+        )
+        .unwrap();
+
+        let buffer_write = [97u8; 20];
+        let mut buffer_read = [98u8; 20];
+        assert_eq!(
+            rustix::io::write(fd_src.as_fd(), &buffer_write),
+            Ok(buffer_write.len())
+        );
+
+        let (reading_fd_pipe, writing_fd_pipe) = rustix::pipe::pipe().unwrap();
+        let pipe_offset = u64::MAX;
+
+        {
+            let mut sqe = ring.get_sqe().unwrap();
+            sqe.prep_splice(
+                0x11111111,
+                fd_src.as_fd(),
+                0,
+                writing_fd_pipe.as_fd(),
+                pipe_offset,
+                buffer_write.len(),
+            );
+            assert_eq!(sqe.opcode, IoringOp::Splice);
+            assert_eq!(
+                unsafe { sqe.addr_or_splice_off_in.addr },
+                io_uring_ptr::null()
+            );
+            assert_eq!(unsafe { sqe.off_or_addr2.off }, pipe_offset);
+            sqe.flags.set(IoringSqeFlags::IO_LINK, true);
+        }
+
+        {
+            let mut sqe = ring.get_sqe().unwrap();
+            sqe.prep_splice(
+                0x22222222,
+                reading_fd_pipe.as_fd(),
+                pipe_offset,
+                fd_dest.as_fd(),
+                10,
+                buffer_write.len(),
+            );
+            assert_eq!(sqe.opcode, IoringOp::Splice);
+            assert_eq!(
+                unsafe { sqe.addr_or_splice_off_in.addr },
+                io_uring_ptr::new(pipe_offset as *mut c_void)
+            );
+            assert_eq!(unsafe { sqe.off_or_addr2.off }, 10);
+        }
     }
 }

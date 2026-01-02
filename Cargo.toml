@@ -15,3 +15,5 @@ rustix = { version = "1.1.2", features = ["io_uring", "mm"] }
 [dev-dependencies]
 pretty_assertions = "1.4.1"
 tempfile = "3.24.0"
+# pipe only needed in tests
+rustix = { version = "1.1.2", features = ["io_uring", "mm", "pipe"] }

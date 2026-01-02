@@ -1000,7 +1000,28 @@ mod err {
 }
 
 #[cfg(test)]
-mod test {}
+mod test {
+    use super::*;
+    use pretty_assertions::{assert_eq, assert_ne};
+
+    // https://codeberg.org/ziglang/zig/issues/30649
+    #[test]
+    fn handles_32bit_sqes() {
+        let mut params = io_uring_params::default();
+        params.flags.set(IoringSetupFlags::CQE32, true);
+
+        let mut ring = IoUring::new_with_params(2, &mut params).unwrap();
+
+        ring.get_sqe().unwrap().prep_nop(0);
+        ring.get_sqe().unwrap().prep_nop(1);
+        let submitted = unsafe { ring.submit_and_wait(2) };
+        assert_eq!(submitted, Ok(2));
+
+        let cqe1 = unsafe { ring.copy_cqe() }.unwrap();
+        let cqe2 = unsafe { ring.copy_cqe() }.unwrap();
+        assert_ne!(cqe1.user_data.u64_(), cqe2.user_data.u64_());
+    }
+}
 
 // From IoUring.zig
 #[cfg(test)]

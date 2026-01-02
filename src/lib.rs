@@ -152,6 +152,10 @@ impl IoUring {
             return Err(SystemOutdated);
         }
 
+        if p.flags.contains(IoringSetupFlags::CQE32) {
+            return Err(UnsupportedFlag("CQE32"));
+        }
+
         // Check that the kernel has actually set params and that "impossible is
         // nothing".
         assert_ne!(p.sq_entries, 0);
@@ -914,7 +918,7 @@ mod err {
         /// prohibits io_uring syscalls:
         PermissionDenied,
         SystemOutdated,
-        OpUringCmdNotSupported,
+        UnsupportedFlag(&'static str),
         UnexpectedErrno(Errno),
     }
 
@@ -1023,10 +1027,10 @@ mod test_ioring_op_uring_cmd {
         let mut params = io_uring_params::default();
         params.flags.set(IoringSetupFlags::CQE32, true);
 
-        let mut ring = IoUring::new_with_params(2, &mut params);
+        let ring = IoUring::new_with_params(2, &mut params);
 
         assert!(
-            matches!(ring, Err(Init::OpUringCmdNotSupported)),
+            matches!(ring, Err(Init::UnsupportedFlag("CQE32"))),
             "attempt to construct ring with CQE32 flag not caught"
         );
     }
@@ -1064,10 +1068,7 @@ mod zig_tests {
     use pretty_assertions::assert_eq;
     use rustix::{
         // TODO: the only place we use these constants, is in these tests?
-        io_uring::{
-            io_uring_ptr, ioprio_union, IoringCqeFlags, IoringOp,
-            IoringSqeFlags,
-        },
+        io_uring::{io_uring_ptr, ioprio_union, IoringOp, IoringSqeFlags},
     };
     use tempfile::tempdir;
 

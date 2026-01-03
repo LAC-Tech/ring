@@ -1118,6 +1118,27 @@ mod zig_tests {
         .unwrap()
     }
 
+    /// Helper to verify clean ring state
+    fn assert_ring_clean(ring: &mut IoUring) {
+        assert_eq!(
+            ring.sq_ready(),
+            0,
+            "Submission queue has {} pending SQEs",
+            ring.sq_ready()
+        );
+        assert_eq!(
+            ring.cq_ready(),
+            0,
+            "Completion queue has {} pending CQEs",
+            ring.cq_ready()
+        );
+        assert_eq!(
+            ring.sq.sqe_head, ring.sq.sqe_tail,
+            "SQE head/tail mismatch: {} != {}",
+            ring.sq.sqe_head, ring.sq.sqe_tail
+        );
+    }
+
     #[test]
     fn nop() {
         let mut ring = IoUring::new(1).unwrap();
@@ -1182,6 +1203,8 @@ mod zig_tests {
         assert_eq!(ring.sq.sqe_tail, 2);
         assert_eq!(ring.sq.read_tail(&mut ring.mmap), 2);
         assert_eq!(ring.cq.read_head(&mut ring.mmap), 2);
+
+        assert_ring_clean(&mut ring);
     }
 
     #[test]
@@ -1222,6 +1245,7 @@ mod zig_tests {
         assert!(&buffer.iter().all(|&n| n == 0));
 
         unsafe { ring.unregister_files().unwrap() }
+        assert_ring_clean(&mut ring);
     }
 
     #[test]
@@ -1282,6 +1306,7 @@ mod zig_tests {
         assert_eq!(ring.cq_ready(), 0);
 
         assert_eq!(&BUFFER_WRITE[0..], &buffer_read[0..]);
+        assert_ring_clean(&mut ring);
     }
 
     #[test]
@@ -1319,6 +1344,7 @@ mod zig_tests {
         assert_eq!(cqe_read.flags, IoringCqeFlags::empty());
 
         assert_eq!(BUFFER_WRITE, buffer_read);
+        assert_ring_clean(&mut ring);
     }
 
     #[test]
@@ -1397,5 +1423,6 @@ mod zig_tests {
         assert_eq!(cqe_read.flags, IoringCqeFlags::empty());
 
         assert_eq!(&buffer_write, &buffer_read);
+        assert_ring_clean(&mut ring);
     }
 }

@@ -99,7 +99,7 @@ impl IoUring {
     /// linux.io_uring_params such as submission queue thread cpu affinity
     /// or thread idle timeout (the kernel and our default is 1 second).
     /// `params` is passed by reference because the kernel needs to modify the
-    /// parameters. Matches the interface of io_uring_queue_init_params() in
+    /// parameters. Matches the interface of `io_uring_queue_init_params()` in
     /// liburing.
     pub fn new_with_params(
         entries: u32,
@@ -229,14 +229,15 @@ impl IoUring {
         self.sq.get_sqe(&self.mmap)
     }
 
-    /// Submits the SQEs acquired via get_sqe() to the kernel. You can call this
-    /// once after you have called get_sqe() multiple times to setup
-    /// multiple I/O requests. Returns the number of SQEs submitted, if not
-    /// used alongside IORING_SETUP_SQPOLL. If the io_uring instance is uses
-    /// IORING_SETUP_SQPOLL, the value returned on success is not guaranteed
-    /// to match the amount of actually submitted sqes during this call. A value
-    /// higher or lower, including 0, may be returned.
-    /// Matches the implementation of io_uring_submit() in liburing.
+    /// Submits the SQEs acquired via [`Self::get_sqe()`] to the kernel. You can
+    /// call this once after you have called [`Self::get_sqe()`] multiple times
+    /// to setup multiple I/O requests. Returns the number of SQEs
+    /// submitted, if not used alongside `IORING_SETUP_SQPOLL`. If the
+    /// `io_uring` instance is uses `IORING_SETUP_SQPOLL`, the value returned
+    /// on success is not guaranteed to match the amount of actually
+    /// submitted sqes during this call. A value higher or lower, including
+    /// 0, may be returned. Matches the implementation of
+    /// `io_uring_submit()` in liburing.
     ///
     /// # Safety
     ///
@@ -245,9 +246,9 @@ impl IoUring {
         self.submit_and_wait(0)
     }
 
-    /// Like submit(), but allows waiting for events as well.
+    /// Like [`Self::submit()`], but allows waiting for events as well.
     /// Returns the number of SQEs submitted.
-    /// Matches the implementation of io_uring_submit_and_wait() in liburing.
+    /// Matches the implementation of `io_uring_submit_and_wait()` in liburing.
     ///
     /// # Safety
     ///
@@ -305,17 +306,17 @@ impl IoUring {
     /// Sync internal state with kernel ring state on the SQ side.
     /// Returns the number of all pending events in the SQ ring, for the shared
     /// ring. This return value includes previously flushed SQEs, as per
-    /// liburing. The rationale is to suggest that an io_uring_enter() call
+    /// liburing. The rationale is to suggest that an `io_uring_enter()` call
     /// is needed rather than not. Matches the implementation of
-    /// __io_uring_flush_sq() in liburing.
+    /// `__io_uring_flush_sq()` in liburing.
     pub fn flush_sq(&mut self) -> u32 {
         self.sq.flush(&mut self.mmap)
     }
 
     /// Returns true if we are not using an SQ thread (thus nobody submits but
-    /// us), or if IORING_SQ_NEED_WAKEUP is set and the SQ thread must be
+    /// us), or if `IORING_SQ_NEED_WAKEUP` is set and the SQ thread must be
     /// explicitly awakened. For the latter case, we set the SQ thread
-    /// wakeup flag. Matches the implementation of sq_ring_needs_enter() in
+    /// wakeup flag. Matches the implementation of `sq_ring_needs_enter()` in
     /// liburing.
     pub fn sq_ring_needs_enter(
         &mut self,
@@ -336,7 +337,7 @@ impl IoUring {
     /// Returns the number of flushed and unflushed SQEs pending in the
     /// submission queue. In other words, this is the number of SQEs in the
     /// submission queue, i.e. its length. These are SQEs that the kernel is
-    /// yet to consume. Matches the implementation of io_uring_sq_ready in
+    /// yet to consume. Matches the implementation of `io_uring_sq_ready` in
     /// liburing.
     pub fn sq_ready(&mut self) -> u32 {
         self.sq.ready(&mut self.mmap)
@@ -344,7 +345,7 @@ impl IoUring {
 
     /// Returns the number of CQEs in the completion queue, i.e. its length.
     /// These are CQEs that the application is yet to consume.
-    /// Matches the implementation of io_uring_cq_ready in liburing.
+    /// Matches the implementation of `io_uring_cq_ready` in liburing.
     pub fn cq_ready(&mut self) -> u32 {
         self.cq.ready(&self.mmap)
     }
@@ -357,10 +358,10 @@ impl IoUring {
     /// copying CQEs rather than copying pointers is that pointers are 8 bytes
     /// whereas CQEs are not much more at only 16 bytes, and this provides a
     /// safer faster interface. Safer, because you no longer need to call
-    /// cqe_seen(), avoiding idempotency bugs. Faster, because we can now
-    /// amortize the atomic store release to `cq.head` across the batch. See https://github.com/axboe/liburing/issues/103#issuecomment-686665007.
-    /// Matches the implementation of io_uring_peek_batch_cqe() in liburing, but
-    /// supports waiting.
+    /// [`Self::cqe_seen`], avoiding idempotency bugs. Faster, because we can
+    /// now amortize the atomic store release to `cq.head` across the batch. See `<https://github.com/axboe/liburing/issues/103#issuecomment-686665007>`.
+    /// Matches the implementation of `io_uring_peek_batch_cqe()` in liburing,
+    /// but supports waiting.
     ///
     /// # Safety
     ///
@@ -433,6 +434,10 @@ impl IoUring {
     ///
     /// The caller must ensure that the file descriptors remain valid until they
     /// have been unregistered.
+    ///
+    /// # Panics
+    ///
+    /// If the length of the `fds` cannot fit in a `u32`.
     pub unsafe fn register_files(
         &self,
         fds: &[BorrowedFd],
@@ -440,7 +445,7 @@ impl IoUring {
         io_uring_register(
             self.fd(),
             IoringRegisterOp::RegisterFiles,
-            fds.as_ptr() as *const c_void,
+            fds.as_ptr().cast::<c_void>(),
             fds.len().try_into().expect("length of fds must fit in a u32"),
         )?;
 

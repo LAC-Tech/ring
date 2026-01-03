@@ -1089,7 +1089,6 @@ mod zig_tests {
     use err::*;
     use pretty_assertions::assert_eq;
     use rustix::fs::{openat, Mode, OFlags, CWD};
-    use rustix::ioctl::opcode;
     use rustix::{
         // TODO: the only place we use these constants, is in these tests?
         io_uring::{io_uring_ptr, ioprio_union, IoringOp, IoringSqeFlags},
@@ -1132,8 +1131,8 @@ mod zig_tests {
             ioprio_to_u16(ioprio_union::default())
         );
         assert_eq!(sqe.fd, 0);
-        assert_eq!(unsafe { sqe.off() }, 0);
-        assert_eq!(unsafe { sqe.addr() }, io_uring_ptr::null());
+        assert_eq!(sqe.off(), 0);
+        assert_eq!(sqe.addr(), io_uring_ptr::null());
         assert_eq!(
             // This isn't even a union in the C struct??
             unsafe { sqe.len.len },
@@ -1242,7 +1241,7 @@ mod zig_tests {
             let mut sqe = ring.get_sqe().unwrap();
             sqe.prep_writev(0xdddddddd, fd.as_fd(), &iovecs_write, 17);
             assert_eq!(sqe.opcode, IoringOp::Writev);
-            assert_eq!(unsafe { sqe.off() }, 17);
+            assert_eq!(sqe.off(), 17);
             sqe.flags.set(IoringSqeFlags::IO_LINK, true);
         }
         {
@@ -1256,7 +1255,7 @@ mod zig_tests {
             let mut sqe = ring.get_sqe().unwrap();
             sqe.prep_readv(0xffffffff, fd.as_fd(), &mut iovecs_read, 17);
             assert_eq!(sqe.opcode, IoringOp::Readv);
-            assert_eq!(unsafe { sqe.off() }, 17);
+            assert_eq!(sqe.off(), 17);
         }
 
         assert_eq!(ring.sq_ready(), 3);
@@ -1298,13 +1297,13 @@ mod zig_tests {
         let mut sqe_write = ring.get_sqe().unwrap();
         sqe_write.prep_write(0x11111111, fd.as_fd(), &BUFFER_WRITE, 10);
         assert_eq!(sqe_write.opcode, IoringOp::Write);
-        assert_eq!(unsafe { sqe_write.off() }, 10);
+        assert_eq!(sqe_write.off(), 10);
         sqe_write.flags.set(IoringSqeFlags::IO_LINK, true);
 
         let mut sqe_read = ring.get_sqe().unwrap();
         sqe_read.prep_read(0x22222222, fd.as_fd(), &mut buffer_read, 10);
         assert_eq!(sqe_read.opcode, IoringOp::Read);
-        assert_eq!(unsafe { sqe_read.off() }, 10);
+        assert_eq!(sqe_read.off(), 10);
 
         assert_eq!(unsafe { ring.submit() }, Ok(2));
 
@@ -1367,8 +1366,8 @@ mod zig_tests {
             );
             assert_eq!(sqe.opcode, IoringOp::Splice);
             assert_eq!(
-                sqe.addr(),
-                io_uring_ptr::new(pipe_offset as *mut c_void)
+                unsafe { sqe.addr_or_splice_off_in.splice_off_in },
+                pipe_offset
             );
             assert_eq!(sqe.off(), 10);
             sqe.flags.set(IoringSqeFlags::IO_LINK, true);

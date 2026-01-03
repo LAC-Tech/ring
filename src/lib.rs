@@ -1095,13 +1095,6 @@ mod zig_tests {
     };
     use tempfile::{tempdir, TempDir};
 
-    // Much of what is tested here in Zig, we do statically
-    #[test]
-    fn entries() {
-        assert_eq!(Init::EntriesZero, IoUring::new(0).unwrap_err());
-        assert_eq!(Init::EntriesNotPowerOfTwo, IoUring::new(3).unwrap_err());
-    }
-
     // It's just a u16 in the C struct
     fn ioprio_to_u16(i: ioprio_union) -> u16 {
         // 100% safe, 'cause Stone Cold said so
@@ -1137,6 +1130,13 @@ mod zig_tests {
             "SQE head/tail mismatch: {} != {}",
             ring.sq.sqe_head, ring.sq.sqe_tail
         );
+    }
+
+    // Much of what is tested here in Zig, we do statically
+    #[test]
+    fn entries() {
+        assert_eq!(Init::EntriesZero, IoUring::new(0).unwrap_err());
+        assert_eq!(Init::EntriesNotPowerOfTwo, IoUring::new(3).unwrap_err());
     }
 
     #[test]

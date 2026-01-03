@@ -1089,6 +1089,7 @@ mod zig_tests {
     use err::*;
     use pretty_assertions::assert_eq;
     use rustix::fs::{openat, Mode, OFlags, CWD};
+    use rustix::ioctl::opcode;
     use rustix::{
         // TODO: the only place we use these constants, is in these tests?
         io_uring::{io_uring_ptr, ioprio_union, IoringOp, IoringSqeFlags},
@@ -1327,7 +1328,7 @@ mod zig_tests {
 
         let tmp = tempdir().unwrap();
         let fd_src = temp_file(&tmp, "test_io_uring_splice_src");
-        let fd_dest = temp_file(&tmp, "test_io_uring_splice_dst");
+        let fd_dst = temp_file(&tmp, "test_io_uring_splice_dst");
 
         let buffer_write = [97u8; 20];
         let mut buffer_read = [98u8; 20];
@@ -1354,14 +1355,13 @@ mod zig_tests {
             assert_eq!(sqe.off(), pipe_offset);
             sqe.flags.set(IoringSqeFlags::IO_LINK, true);
         }
-
         {
             let mut sqe = ring.get_sqe().unwrap();
             sqe.prep_splice(
                 0x22222222,
                 reading_fd_pipe.as_fd(),
                 pipe_offset,
-                fd_dest.as_fd(),
+                fd_dst.as_fd(),
                 10,
                 buffer_write.len(),
             );
@@ -1371,6 +1371,32 @@ mod zig_tests {
                 io_uring_ptr::new(pipe_offset as *mut c_void)
             );
             assert_eq!(sqe.off(), 10);
+            sqe.flags.set(IoringSqeFlags::IO_LINK, true);
         }
+        {
+            let mut sqe = ring.get_sqe().unwrap();
+            sqe.prep_read(0x33333333, fd_dst.as_fd(), &mut buffer_read, 10);
+            assert_eq!(sqe.opcode, IoringOp::Read);
+            assert_eq!(sqe.off(), 10);
+            assert_eq!(unsafe { ring.submit() }, Ok(3));
+        }
+
+        let cqe_splice_to_pipe = unsafe { ring.copy_cqe() }.unwrap();
+        let cqe_splice_from_pipe = unsafe { ring.copy_cqe() }.unwrap();
+        let cqe_read = unsafe { ring.copy_cqe() }.unwrap();
+
+        assert_eq!(cqe_splice_to_pipe.user_data.u64_(), 0x11111111);
+        assert_eq!(cqe_splice_to_pipe.res, buffer_write.len() as i32);
+        assert_eq!(cqe_splice_to_pipe.flags, IoringCqeFlags::empty());
+
+        assert_eq!(cqe_splice_from_pipe.user_data.u64_(), 0x22222222);
+        assert_eq!(cqe_splice_from_pipe.res, buffer_write.len() as i32);
+        assert_eq!(cqe_splice_from_pipe.flags, IoringCqeFlags::empty());
+
+        assert_eq!(cqe_read.user_data.u64_(), 0x33333333);
+        assert_eq!(cqe_read.res, buffer_read.len() as i32);
+        assert_eq!(cqe_read.flags, IoringCqeFlags::empty());
+
+        assert_eq!(&buffer_write, &buffer_read);
     }
 }

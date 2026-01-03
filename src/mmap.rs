@@ -33,7 +33,7 @@ impl Drop for RwMmap {
         // SAFETY: We own the pointer and the length is correct.
         unsafe {
             // If we fail while unmapping memory I don't know what to do.
-            mm::munmap(self.ptr, self.len).expect("munmap failed")
+            mm::munmap(self.ptr, self.len).expect("munmap failed");
         }
     }
 }
@@ -58,7 +58,7 @@ impl RwMmap {
     /// mutation as type `T` and follows Rust's aliasing rules.
     unsafe fn mut_ptr_at<T>(&mut self, byte_offset: u32) -> *mut T {
         self.check_bounds(byte_offset, mem::size_of::<T>());
-        (self.ptr as *mut u8).add(byte_offset as usize) as *mut T
+        self.ptr.cast::<u8>().add(byte_offset as usize) as *mut T
     }
 
     /// # Safety

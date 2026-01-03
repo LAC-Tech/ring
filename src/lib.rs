@@ -1,4 +1,4 @@
-//! Pure Rust io_uring bindings that do not rely on libc, or the rust standard
+//! Pure Rust `io_uring` bindings that do not rely on libc, or the rust standard
 //! library. The API is designed to be simple and straight-forward.
 //!
 //! This is a systems programming library at the same level of abstraction as
@@ -403,24 +403,25 @@ impl IoUring {
         }
     }
 
-    /// Matches the implementation of cq_ring_needs_flush() in liburing.
+    /// Matches the implementation of `cq_ring_needs_flush()` in liburing.
     pub fn cq_ring_needs_flush(&mut self) -> bool {
         self.sq.flag_contains(&self.mmap, IoringSqFlags::CQ_OVERFLOW)
     }
 
     /// For advanced use cases only that implement custom completion queue
-    /// methods. If you use copy_cqes() or copy_cqe() you must not call
-    /// cqe_seen() or cq_advance(). Must be called exactly once after a
-    /// zero-copy CQE has been processed by your application.
-    /// Not idempotent, calling more than once will result in other CQEs being
-    /// lost. Matches the implementation of cqe_seen() in liburing.
+    /// methods. If you use [`Self::copy_cqes`] or [`Self::copy_cqe`] you must
+    /// not call [`Self::cqe_seen()`] or [`Self::cq_advance()`]. Must be called
+    /// exactly once after a zero-copy CQE has been processed by your
+    /// application. Not idempotent, calling more than once will result in
+    /// other CQEs being lost. Matches the implementation of `cqe_seen()` in
+    /// liburing.
     // TODO: const pointer param? not using it? review this..
     pub fn cqe_seen(&mut self, _cqe: *const Cqe) {
         self.cq.advance(&mut self.mmap, 1);
     }
 
     /// For advanced use cases only that implement custom completion queue
-    /// methods. Matches the implementation of cq_advance() in liburing.
+    /// methods. Matches the implementation of `cq_advance()` in liburing.
     pub fn cq_advance(&mut self, count: u32) {
         self.cq.advance(&mut self.mmap, count);
     }
@@ -910,16 +911,16 @@ mod err {
         ParamsOutsideAccessibleAddressSpace,
         /// The resv array contains non-zero data, p.flags contains an
         /// unsupported flag, entries out of bounds,
-        /// IORING_SETUP_SQ_AFF was specified without IORING_SETUP_SQPOLL,
-        /// or IORING_SETUP_CQSIZE was specified but
-        /// linux.io_uring_params.cq_entries was invalid:
+        /// `IORING_SETUP_SQ_AFF` was specified without `IORING_SETUP_SQPOLL`,
+        /// or `IORING_SETUP_CQSIZE` was specified but
+        /// `io_uring_params.cq_entries` was invalid:
         ArgumentsInvalid,
         ProcessFdQuotaExceeded,
         SystemFdQuotaExceeded,
         SystemResources,
-        /// IORING_SETUP_SQPOLL was specified but effective user ID lacks
+        /// `IORING_SETUP_SQPOLL` was specified but effective user ID lacks
         /// sufficient privileges, or a container seccomp policy
-        /// prohibits io_uring syscalls:
+        /// prohibits `io_uring` syscalls:
         PermissionDenied,
         SystemOutdated,
         UnsupportedFlag(&'static str),
@@ -932,33 +933,33 @@ mod err {
         /// for the request. The application should waitufor some
         /// completions and try again:
         SystemResources,
-        /// The SQE `fd` is invalid, or IOSQE_FIXED_FILE was set but no files
+        /// The SQE `fd` is invalid, or `IOSQE_FIXED_FILE` was set but no files
         /// were registered:
         FileDescriptorInvalid,
         /// The file descriptor is valid, but the ring is not in the right
-        /// state. See io_uring_register(2) for how to enable the ring.
+        /// state. See `io_uring_register(2)` for how to enable the ring.
         FileDescriptorInBadState,
         /// The application attempted to overcommit the number of requests it
         /// can have pending. The application should wait for some
         /// completions and try again:
         CompletionQueueOvercommitted,
         /// The SQE is invalid, or valid but the ring was setup with
-        /// IORING_SETUP_IOPOLL:
+        /// `IORING_SETUP_IOPOLL`
         SubmissionQueueEntryInvalid,
         /// The buffer is outside the process' accessible address space, or
-        /// IORING_OP_READ_FIXED or IORING_OP_WRITE_FIXED was specified
+        /// `IORING_OP_READ_FIXED` or `IORING_OP_WRITE_FIXED` was specified
         /// but no buffers were registered, or the range described by
         /// `addr` and `len` is not within the buffer registered at
         /// `buf_index`:
         BufferInvalid,
         RingShuttingDown,
-        /// The kernel believes our `self.fd` does not refer to an io_uring
+        /// The kernel believes our `self.fd` does not refer to an `io_uring`
         /// instance, or the opcode is valid but not supported by this
         /// kernel (more likely):
         OpcodeNotSupported,
         /// The operation was interrupted by a delivery of a signal before it
         /// could complete. This can happen while waiting for events
-        /// with IORING_ENTER_GETEVENTS:
+        /// with `IORING_ENTER_GETEVENTS`:
         SignalInterrupt,
         UnexpectedErrno(Errno),
     }
@@ -977,15 +978,15 @@ mod err {
         FilesEmpty,
         /// Adding `nr_args` file references would exceed the maximum allowed
         /// number of files the user is allowed to have according to
-        /// the per-user RLIMIT_NOFILE resource limit and
-        /// the CAP_SYS_RESOURCE capability is not set, or `nr_args` exceeds
+        /// the per-user `RLIMIT_NOFILE` resource limit and
+        /// the `CAP_SYS_RESOURCE` capability is not set, or `nr_args` exceeds
         /// the maximum allowed for a fixed file set (older kernels
         /// have a limit of 1024 files vs 64K files):
         UserFdQuotaExceeded,
         /// Insufficient kernel resources, or the caller had a non-zero
-        /// RLIMIT_MEMLOCK soft resource limit but tried to lock more
+        /// `RLIMIT_MEMLOCK` soft resource limit but tried to lock more
         /// memory than the limit permitted (not enforced
-        /// when the process is privileged with CAP_IPC_LOCK):
+        /// when the process is privileged with `CAP_IPC_LOCK`):
         SystemResources,
         // Attempt to register files on a ring already registering files or
         // being torn down:
@@ -1332,8 +1333,8 @@ mod zig_tests {
                 buffer_write.len(),
             );
             assert_eq!(sqe.opcode, IoringOp::Splice);
-            assert_eq!(unsafe { sqe.addr() }, io_uring_ptr::null());
-            assert_eq!(unsafe { sqe.off() }, pipe_offset);
+            assert_eq!(sqe.addr(), io_uring_ptr::null());
+            assert_eq!(sqe.off(), pipe_offset);
             sqe.flags.set(IoringSqeFlags::IO_LINK, true);
         }
 
@@ -1349,10 +1350,10 @@ mod zig_tests {
             );
             assert_eq!(sqe.opcode, IoringOp::Splice);
             assert_eq!(
-                unsafe { sqe.addr() },
+                sqe.addr(),
                 io_uring_ptr::new(pipe_offset as *mut c_void)
             );
-            assert_eq!(unsafe { sqe.off() }, 10);
+            assert_eq!(sqe.off(), 10);
         }
     }
 }

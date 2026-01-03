@@ -25,7 +25,7 @@ pub use rustix::io_uring::{
 use core::ffi::c_void;
 use core::ptr::null;
 use core::sync::atomic::Ordering;
-use core::{assert, assert_eq, assert_ne, cmp, mem, ptr};
+use core::{assert, assert_eq, assert_ne, cmp, mem};
 use mmap::RwMmap;
 use rustix::fd::{AsFd, AsRawFd, OwnedFd};
 use rustix::io;

@@ -439,8 +439,8 @@ impl IoUring {
         self.cq.advance(&mut self.mmap, count);
     }
 
-    /// Registers an array of buffers for use with [`SqeExt::prep_read_fixed`]
-    /// and [`SqeExt::prep_write_fixed`].
+    /// Registers an array of buffers for use with [`SqeExt::prep_readv_fixed`]
+    /// and [`SqeExt::prep_writev_fixed`].
     ///
     /// # Safety
     ///

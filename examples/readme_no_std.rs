@@ -1,6 +1,5 @@
 #![no_std]
 use hringas::rustix::fs::{openat, Mode, OFlags, CWD};
-use hringas::rustix::io::Errno;
 use hringas::{Cqe, IoUring, SqeExt};
 use rustix::fd::AsFd;
 
@@ -21,5 +20,5 @@ fn main() {
     };
 
     assert_eq!(user_data.u64_(), 0x42);
-    assert!(res >= 0, "read error: {}", Errno::from_raw_os_error(-res));
+    assert!(res >= 0, "read error: {}", res);
 }

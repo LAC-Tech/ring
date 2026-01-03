@@ -1,13 +1,18 @@
 [package]
 name = "hringas"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 license = "MIT"
 description = "no libc, no_std, pure rust bindings to io_uring"
 repository = "https://github.com/LAC-Tech/hringas"
 keywords = ["io_uring", "event_loop", "linux"]
-categories = ["api-bindings", "asynchronous", "concurrency", "no-std",
-"os::linux-apis"]
+categories = [
+  "api-bindings",
+  "asynchronous",
+  "concurrency",
+  "no-std",
+  "os::linux-apis",
+]
 
 [dependencies]
 rustix = { version = "1.1.2", features = ["io_uring", "mm"] }

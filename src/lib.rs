@@ -1,16 +1,27 @@
 //! Pure Rust `io_uring` bindings that do not rely on libc, or the rust standard
-//! library. The API is designed to be simple and straight-forward.
+//! library. The api is designed to be simple and straight-forward.
+//!
+//! Start with [`IoUring`] - this is the primary entry point.
 //!
 //! This is a systems programming library at the same level of abstraction as
-//! `liburing`. While `unsafe` methods are kept  to a minimum,  submitting
+//! `liburing`. while `unsafe` methods are kept  to a minimum,  submitting
 //! things to the linux kernel to be modified asynchronously is inherently
 //! outside rust's concept of "safety".
 //!
-//! It is based on the [IoUring implementation in the Zig Standard library](https://codeberg.org/ziglang/zig/src/branch/0.15.x/lib/std/os/linux/IoUring.zig).
-//! The only dependency in rustix, which is roughly the equivalent of Zig's
-//! `std.os`.
-
-#![cfg_attr(not(test), no_std)]
+//! It is based on the [iouring implementation in the zig standard library](https://codeberg.org/ziglang/zig/src/branch/0.15.x/lib/std/os/linux/iouring.zig),
+//! though the design is beginning to diverge. The only dependency in rustix,
+//! which is roughly the equivalent of zig's `std.os`.
+//!
+//! # Example
+//!
+//! ```
+#![doc = include_str!("../examples/readme.rs")]
+//! ```
+//! 
+//! Or, in `no_std`:
+//! ```
+#![doc = include_str!("../examples/readme_no_std.rs")]
+//! ```
 
 mod mmap;
 pub use rustix;
@@ -63,7 +74,7 @@ const _: () = {
 /// An io_uring Completion Queue Entry.
 ///
 /// While rustix provides one, it has some issues:
-/// https://github.com/bytecodealliance/rustix/issues/1568
+/// <https://github.com/bytecodealliance/rustix/issues/1568>
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub struct Cqe {
@@ -72,6 +83,7 @@ pub struct Cqe {
     pub flags: IoringCqeFlags,
 }
 
+/// The main entry point to the library.
 #[derive(Debug)]
 pub struct IoUring {
     fd: OwnedFd,
@@ -87,7 +99,7 @@ impl IoUring {
     /// A friendly way to setup an io_uring, with default linux.io_uring_params.
     /// `entries` must be a power of two between 1 and 32768, although the
     /// kernel will make the final call on how many entries the submission
-    /// and completion queues will ultimately have, see https://github.com/torvalds/linux/blob/v5.8/fs/io_uring.c#L8027-L8050.
+    /// and completion queues will ultimately have, see <https://github.com/torvalds/linux/blob/v5.8/fs/io_uring.c#L8027-L8050>.
     /// Matches the interface of io_uring_queue_init() in liburing.
     pub fn new(entries: u32) -> Result<Self, err::Init> {
         let mut params = io_uring_params::default();
@@ -359,7 +371,7 @@ impl IoUring {
     /// whereas CQEs are not much more at only 16 bytes, and this provides a
     /// safer faster interface. Safer, because you no longer need to call
     /// [`Self::cqe_seen`], avoiding idempotency bugs. Faster, because we can
-    /// now amortize the atomic store release to `cq.head` across the batch. See `<https://github.com/axboe/liburing/issues/103#issuecomment-686665007>`.
+    /// now amortize the atomic store release to `cq.head` across the batch. See <https://github.com/axboe/liburing/issues/103#issuecomment-686665007>.
     /// Matches the implementation of `io_uring_peek_batch_cqe()` in liburing,
     /// but supports waiting.
     ///

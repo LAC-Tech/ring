@@ -1398,13 +1398,16 @@ mod zig_tests {
             assert_eq!(sqe.off(), 10);
             sqe.flags.set(IoringSqeFlags::IO_LINK, true);
         }
+
         {
             let mut sqe = ring.get_sqe().unwrap();
             sqe.prep_read(0x33333333, fd_dst.as_fd(), &mut buffer_read, 10);
             assert_eq!(sqe.opcode, IoringOp::Read);
             assert_eq!(sqe.off(), 10);
-            assert_eq!(unsafe { ring.submit() }, Ok(3));
         }
+
+        // TODO: this slows everything down!!! why is it so slow?
+        assert_eq!(unsafe { ring.submit() }, Ok(3));
 
         let cqe_splice_to_pipe = unsafe { ring.copy_cqe() }.unwrap();
         let cqe_splice_from_pipe = unsafe { ring.copy_cqe() }.unwrap();

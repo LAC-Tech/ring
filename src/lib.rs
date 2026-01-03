@@ -439,8 +439,8 @@ impl IoUring {
         self.cq.advance(&mut self.mmap, count);
     }
 
-    /// Registers an array of buffers for use with `prep_read_fixed` and
-    /// `prep_write_fixed`.
+    /// Registers an array of buffers for use with [`SqeExt::prep_read_fixed`]
+    /// and [`SqeExt::prep_write_fixed`].
     ///
     /// # Safety
     ///
@@ -540,7 +540,7 @@ pub trait SqeExt {
         offset: u64,
     );
 
-    fn prep_readv_fixed_file(
+    fn prep_readv_fixed(
         &mut self,
         user_data: u64,
         file_index: usize,
@@ -640,7 +640,7 @@ impl SqeExt for &mut io_uring_sqe {
         self.user_data.u64_ = user_data;
     }
 
-    fn prep_readv_fixed_file(
+    fn prep_readv_fixed(
         &mut self,
         user_data: u64,
         file_index: usize,
@@ -1205,7 +1205,7 @@ mod zig_tests {
         let mut buffer = [42u8; 128];
         let iovecs = [IoSliceMut::new(&mut buffer)];
         let mut sqe = ring.get_sqe().unwrap();
-        sqe.prep_readv_fixed_file(0xcccccccc, fd_index, &iovecs, 0);
+        sqe.prep_readv_fixed(0xcccccccc, fd_index, &iovecs, 0);
         assert_eq!(sqe.opcode, IoringOp::Readv);
         assert!(sqe.flags.contains(IoringSqeFlags::FIXED_FILE));
 

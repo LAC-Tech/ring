@@ -1144,6 +1144,8 @@ mod zig_tests {
         assert_ring_clean(&mut ring);
     }
 
+    // TODO: this hangs for about 5 seconds after the thread is done
+    // It is the test runner doing this, not the code, see the example
     #[test]
     fn splice_read() {
         let mut ring = IoUring::new(4).unwrap();

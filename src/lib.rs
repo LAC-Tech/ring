@@ -40,9 +40,9 @@ use core::{assert, assert_eq, assert_ne, cmp};
 use rustix::fd::{AsFd, AsRawFd, OwnedFd};
 use rustix::io;
 use rustix::io_uring::{
-    io_sqring_offsets, io_uring_enter, io_uring_ptr, io_uring_register,
-    io_uring_setup, IoringFeatureFlags, IoringRegisterOp, IoringSetupFlags,
-    IoringSqFlags, IoringSqeFlags,
+    io_uring_enter, io_uring_ptr, io_uring_register, io_uring_setup,
+    IoringFeatureFlags, IoringRegisterOp, IoringSetupFlags, IoringSqFlags,
+    IoringSqeFlags,
 };
 
 /// The main entry point to the library.
@@ -706,25 +706,6 @@ struct SubmissionQueue {
     // SQEs.
     sqe_head: u32,
     sqe_tail: u32,
-}
-
-// TODO: inline this
-impl SubmissionQueue {
-    fn new(
-        p: &io_uring_params,
-        fd: BorrowedFd<'_>,
-        mask: u32,
-    ) -> io::Result<Self> {
-        let sq = Self {
-            entries: p.sq_entries,
-            sqes: mmap::Sqes::new(fd, &p)?,
-            mask,
-            sqe_head: 0,
-            sqe_tail: 0,
-        };
-
-        Ok(sq)
-    }
 }
 
 #[derive(Debug)]

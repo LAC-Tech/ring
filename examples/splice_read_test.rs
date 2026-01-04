@@ -4,6 +4,8 @@ use rustix::fs::{openat, Mode, OFlags, CWD};
 use rustix::io_uring::{io_uring_ptr, IoringCqeFlags, IoringSqeFlags};
 use tempfile::{tempdir, TempDir};
 
+use std::time::Instant;
+
 fn temp_file(dir: &TempDir, path: &'static str) -> OwnedFd {
     openat(
         CWD,
@@ -14,7 +16,7 @@ fn temp_file(dir: &TempDir, path: &'static str) -> OwnedFd {
     .unwrap()
 }
 
-fn main() {
+fn test() {
     let mut ring = IoUring::new(4).unwrap();
 
     let tmp = tempdir().unwrap();
@@ -92,4 +94,19 @@ fn main() {
     assert_eq!(cqe_read.flags, IoringCqeFlags::empty());
 
     assert_eq!(&buffer_write, &buffer_read);
+}
+
+fn main() {
+    println!("\n=== Running in main thread (should be fast) ===");
+    let start = Instant::now();
+    test();
+    println!("Main thread test took: {:?}\n", start.elapsed());
+
+    println!("=== Running in spawned thread (will likely be slow) ===");
+    let start = Instant::now();
+    let handle = std::thread::spawn(|| {
+        test();
+    });
+    handle.join().unwrap();
+    println!("Spawned thread test took: {:?}\n", start.elapsed());
 }

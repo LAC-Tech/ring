@@ -40,9 +40,9 @@ use core::{assert, assert_eq, assert_ne, cmp};
 use rustix::fd::{AsFd, AsRawFd, OwnedFd};
 use rustix::io;
 use rustix::io_uring::{
-    io_cqring_offsets, io_sqring_offsets, io_uring_enter, io_uring_ptr,
-    io_uring_register, io_uring_setup, IoringFeatureFlags, IoringRegisterOp,
-    IoringSetupFlags, IoringSqFlags, IoringSqeFlags,
+    io_sqring_offsets, io_uring_enter, io_uring_ptr, io_uring_register,
+    io_uring_setup, IoringFeatureFlags, IoringRegisterOp, IoringSetupFlags,
+    IoringSqFlags, IoringSqeFlags,
 };
 
 /// The main entry point to the library.
@@ -53,7 +53,7 @@ pub struct IoUring {
     flags: IoringSetupFlags,
     features: IoringFeatureFlags,
     sq: SubmissionQueue,
-    cq_mask: u32,
+    cq: CompletionQueue,
 }
 
 impl IoUring {
@@ -138,18 +138,18 @@ impl IoUring {
         let (shared, ring_masks) =
             mmap::Ioring::new(fd.as_fd(), &p).map_err(UnexpectedErrno)?;
 
-        let sq = SubmissionQueue::new(p, fd.as_fd(), ring_masks.sq)
-            .map_err(UnexpectedErrno)?;
-        let cq_mask = ring_masks.cq;
+        let sqes = mmap::Sqes::new(fd.as_fd(), &p).map_err(UnexpectedErrno)?;
 
-        Ok(Self {
-            fd,
-            shared,
-            flags: p.flags,
-            features: p.features,
-            sq,
-            cq_mask,
-        })
+        let sq = SubmissionQueue {
+            entries: p.sq_entries,
+            sqes,
+            mask: ring_masks.sq,
+            sqe_head: 0,
+            sqe_tail: 0,
+        };
+        let cq = CompletionQueue { mask: ring_masks.cq, entries: p.cq_entries };
+
+        Ok(Self { fd, shared, flags: p.flags, features: p.features, sq, cq })
     }
 
     pub fn fd(&self) -> BorrowedFd<'_> {
@@ -377,16 +377,12 @@ impl IoUring {
     fn copy_cqes_ready(&mut self, cqes: &mut [Cqe]) -> u32 {
         let ready = self.cq_ready();
         let count = cmp::min(cqes.len(), ready as usize);
-        let head = self.shared.cq_head() & self.cq_mask;
-
-        let ring_cqes = self.shared.cqes();
+        let head = self.shared.cq_head() & self.cq.mask;
 
         // before wrapping
-        let n = cmp::min(
-            // Safe to cast as u32, since it gets its len a u32 bit field
-            (ring_cqes.len() as u32 - head) as usize,
-            count,
-        );
+        let n = cmp::min((self.cq.entries - head) as usize, count);
+
+        let ring_cqes = self.shared.cqes();
 
         {
             let head = head as usize;
@@ -700,7 +696,6 @@ impl SqeExt for &mut io_uring_sqe {
 struct SubmissionQueue {
     // Contains the array with the actual sq entries
     sqes: mmap::Sqes,
-    off: io_sqring_offsets,
     entries: u32,
     mask: u32,
     // We use `sqe_head` and `sqe_tail` in the same way as liburing:
@@ -713,6 +708,7 @@ struct SubmissionQueue {
     sqe_tail: u32,
 }
 
+// TODO: inline this
 impl SubmissionQueue {
     fn new(
         p: &io_uring_params,
@@ -721,7 +717,6 @@ impl SubmissionQueue {
     ) -> io::Result<Self> {
         let sq = Self {
             entries: p.sq_entries,
-            off: p.sq_off,
             sqes: mmap::Sqes::new(fd, &p)?,
             mask,
             sqe_head: 0,
@@ -730,6 +725,12 @@ impl SubmissionQueue {
 
         Ok(sq)
     }
+}
+
+#[derive(Debug)]
+struct CompletionQueue {
+    mask: u32,
+    entries: u32,
 }
 
 mod err {
@@ -989,7 +990,7 @@ mod zig_tests {
         assert_eq!(ring.sq.sqe_head, 0);
         assert_eq!(ring.sq.sqe_tail, 1);
         assert_eq!(ring.shared.sq_tail(), 0);
-        assert_eq!(ring.shared.cq_head() & ring.cq_mask, 0);
+        assert_eq!(ring.shared.cq_head() & ring.cq.mask, 0);
         assert_eq!(ring.sq_ready(), 1);
         assert_eq!(ring.cq_ready(), 0);
 

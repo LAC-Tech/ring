@@ -83,7 +83,7 @@ impl IoUring {
     ///    [`IoringSetupFlags::SQ_AFF`] was specified without
     ///    [`IoringSetupFlags::SQPOLL`], or [`IoringSetupFlags::CQSIZE`] was
     ///    specified but linux.io_uring_params.cq_entries was invalid.
-    /// - [`Errno::INVAL`] [`IoringSetupFlags::SQPOLL`] was specified but
+    /// - [`Errno::PERM`] [`IoringSetupFlags::SQPOLL`] was specified but
     ///   effective user ID lacks sufficient privileges, or a container seccomp
     ///   policy prohibits io_uring syscalls.
     pub fn new_with_params(
@@ -230,6 +230,8 @@ impl IoUring {
     /// The caller must ensure that any buffers or file descriptors referenced
     /// by the SQEs remain valid until the kernel has completed the
     /// requested operations.
+    ///
+    /// # Errors
     pub unsafe fn enter(
         &mut self,
         to_submit: u32,

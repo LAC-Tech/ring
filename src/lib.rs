@@ -68,8 +68,8 @@ impl IoUring {
         Self::new_with_params(entries, &mut params)
     }
 
-    /// A powerful way to setup an io_uring, if you want to tweak
-    /// linux.io_uring_params such as submission queue thread cpu affinity
+    /// A powerful way to setup an `io_uring`, if you want to tweak
+    /// `io_uring_params` such as submission queue thread cpu affinity
     /// or thread idle timeout (the kernel and our default is 1 second).
     /// `params` is passed by reference because the kernel needs to modify the
     /// parameters. Matches the interface of `io_uring_queue_init_params()` in
@@ -136,9 +136,9 @@ impl IoUring {
         assert!(p.cq_entries >= p.sq_entries);
 
         let (shared, ring_masks) =
-            mmap::Ioring::new(fd.as_fd(), &p).map_err(UnexpectedErrno)?;
+            mmap::Ioring::new(fd.as_fd(), p).map_err(UnexpectedErrno)?;
 
-        let sqes = mmap::Sqes::new(fd.as_fd(), &p).map_err(UnexpectedErrno)?;
+        let sqes = mmap::Sqes::new(fd.as_fd(), p).map_err(UnexpectedErrno)?;
 
         let sq = SubmissionQueue {
             entries: p.sq_entries,

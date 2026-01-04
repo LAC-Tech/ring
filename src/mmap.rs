@@ -294,7 +294,7 @@ impl Ioring {
         byte_offset: u32,
         ordering: Ordering,
     ) -> u32 {
-        let ptr = self.mmap.ptr_at::<u32>(byte_offset) as *mut u32;
+        let ptr = self.mmap.ptr_at::<u32>(byte_offset).cast_mut();
         AtomicU32::from_ptr(ptr).load(ordering)
     }
 
@@ -311,7 +311,7 @@ impl Ioring {
     unsafe fn raw_slice_at<T>(&self, byte_offset: u32, len: u32) -> *mut [T] {
         self.mmap.check_bounds(byte_offset, (len as usize) * size_of::<T>());
         let ptr =
-            (self.mmap.ptr as *mut u8).add(byte_offset as usize) as *mut T;
+            self.mmap.ptr.cast::<u8>().add(byte_offset as usize).cast::<T>();
         ptr::slice_from_raw_parts_mut(ptr, len as usize)
     }
 

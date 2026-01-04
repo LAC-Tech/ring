@@ -5,13 +5,47 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use rustix::fd::BorrowedFd;
 use rustix::mm;
 
+// Convenience struct so mmap's are dropped
 #[derive(Debug)]
-pub struct RwMmap {
+struct Mmap {
     ptr: *mut c_void,
     len: usize,
 }
 
-impl RwMmap {
+impl Mmap {
+    fn new(
+        size: usize,
+        fd: BorrowedFd,
+        flags: mm::MapFlags,
+        offset: u64,
+    ) -> rustix::io::Result<Self> {
+        let prot_flags = mm::ProtFlags::READ | mm::ProtFlags::WRITE;
+        // SAFETY: Fd cannot be dropped because it's borrowed
+        let ptr = unsafe {
+            mm::mmap(ptr::null_mut(), size, prot_flags, flags, fd, offset)?
+        };
+
+        Ok(Self { ptr, len: size })
+    }
+}
+
+impl Drop for Mmap {
+    fn drop(&mut self) {
+        // SAFETY: We own the pointer and the length is correct.
+        unsafe {
+            // If we fail while unmapping memory I don't know what to do.
+            mm::munmap(self.ptr, self.len).expect("munmap failed");
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct IoringMmap {
+    ptr: *mut c_void,
+    len: usize,
+}
+
+impl IoringMmap {
     pub fn new(
         size: usize,
         fd: BorrowedFd,
@@ -28,7 +62,7 @@ impl RwMmap {
     }
 }
 
-impl Drop for RwMmap {
+impl Drop for IoringMmap {
     fn drop(&mut self) {
         // SAFETY: We own the pointer and the length is correct.
         unsafe {
@@ -39,7 +73,7 @@ impl Drop for RwMmap {
 }
 
 // All our pointer accesses are by u32s..
-impl RwMmap {
+impl IoringMmap {
     fn check_bounds(&self, offset: u32, size: usize) {
         let end =
             (offset as usize).checked_add(size).expect("mmap offset overflow");

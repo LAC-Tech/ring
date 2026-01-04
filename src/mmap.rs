@@ -1,6 +1,6 @@
 use core::cmp;
 use core::ffi::c_void;
-use core::mem;
+use core::mem::size_of;
 use core::ops::{Index, IndexMut};
 use core::ptr;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -16,18 +16,15 @@ use std::os::fd::AsFd;
 // Sanity check that we can cast from u32 to usize
 const _: () = assert!(usize::BITS >= 32);
 
-// I am constantly using these - makes it a little bit cleaner
-const U32_SIZE: u32 = mem::size_of::<u32>() as u32;
-const SQE_SIZE: u32 = mem::size_of::<io_uring_sqe>() as u32;
-const CQE_SIZE: u32 = mem::size_of::<Cqe>() as u32;
-
-const _: () = assert!(U32_SIZE == 4); // rofl why not
+// Just reducing some line noise
+const SQE_SIZE: u32 = size_of::<io_uring_sqe>() as u32;
+const CQE_SIZE: u32 = size_of::<Cqe>() as u32;
 
 // Taken from the zig test "structs/offsets/entries"
 // Because this is a 3rd party lib we can be more aggressive about preventing
 // compilation.
 const _: () = {
-    assert!(mem::size_of::<io_uring_params>() == 120);
+    assert!(size_of::<io_uring_params>() == 120);
     assert!(SQE_SIZE == 64);
     assert!(CQE_SIZE == 16);
 
@@ -88,7 +85,7 @@ impl Mmap {
     /// The caller must ensure that the memory at `byte_offset` is valid for
     /// mutation as type `T` and follows Rust's aliasing rules.
     unsafe fn mut_ptr_at<T>(&mut self, byte_offset: u32) -> *mut T {
-        self.check_bounds(byte_offset, mem::size_of::<T>());
+        self.check_bounds(byte_offset, size_of::<T>());
         self.ptr.cast::<u8>().add(byte_offset as usize) as *mut T
     }
 
@@ -97,7 +94,7 @@ impl Mmap {
     /// The caller must ensure that the memory at `byte_offset` is a valid
     /// representation of type `T`.
     unsafe fn ptr_at<T>(&self, byte_offset: u32) -> *const T {
-        self.check_bounds(byte_offset, mem::size_of::<T>());
+        self.check_bounds(byte_offset, size_of::<T>());
         (self.ptr as *const u8).add(byte_offset as usize) as *const T
     }
 
@@ -186,7 +183,7 @@ impl Ioring {
         let io_uring_params { sq_entries, cq_entries, sq_off, cq_off, .. } = *p;
 
         let size = cmp::max(
-            sq_off.array + sq_entries * U32_SIZE,
+            sq_off.array + sq_entries * (size_of::<u32>() as u32),
             cq_off.cqes + cq_entries * CQE_SIZE,
         ) as usize;
         let mmap = Mmap::new(
@@ -312,8 +309,7 @@ impl Ioring {
     }
 
     unsafe fn raw_slice_at<T>(&self, byte_offset: u32, len: u32) -> *mut [T] {
-        self.mmap
-            .check_bounds(byte_offset, (len as usize) * mem::size_of::<T>());
+        self.mmap.check_bounds(byte_offset, (len as usize) * size_of::<T>());
         let ptr =
             (self.mmap.ptr as *mut u8).add(byte_offset as usize) as *mut T;
         ptr::slice_from_raw_parts_mut(ptr, len as usize)

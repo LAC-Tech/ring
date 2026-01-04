@@ -53,7 +53,7 @@ pub struct IoUring {
     flags: IoringSetupFlags,
     features: IoringFeatureFlags,
     sq: SubmissionQueue,
-    cq: CompletionQueue,
+    cq_mask: u32,
 }
 
 impl IoUring {
@@ -140,9 +140,16 @@ impl IoUring {
 
         let sq = SubmissionQueue::new(p, fd.as_fd(), ring_masks.sq)
             .map_err(UnexpectedErrno)?;
-        let cq = CompletionQueue::new(p, ring_masks.cq);
+        let cq_mask = ring_masks.cq;
 
-        Ok(Self { fd, shared, flags: p.flags, features: p.features, sq, cq })
+        Ok(Self {
+            fd,
+            shared,
+            flags: p.flags,
+            features: p.features,
+            sq,
+            cq_mask,
+        })
     }
 
     pub fn fd(&self) -> BorrowedFd<'_> {
@@ -370,12 +377,16 @@ impl IoUring {
     fn copy_cqes_ready(&mut self, cqes: &mut [Cqe]) -> u32 {
         let ready = self.cq_ready();
         let count = cmp::min(cqes.len(), ready as usize);
-        let head = self.shared.cq_head() & self.cq.mask;
-
-        // before wrapping
-        let n = cmp::min((self.shared.cq_entries - head) as usize, count);
+        let head = self.shared.cq_head() & self.cq_mask;
 
         let ring_cqes = self.shared.cqes();
+
+        // before wrapping
+        let n = cmp::min(
+            // Safe to cast as u32, since it gets its len a u32 bit field
+            (ring_cqes.len() as u32 - head) as usize,
+            count,
+        );
 
         {
             let head = head as usize;
@@ -721,20 +732,6 @@ impl SubmissionQueue {
     }
 }
 
-// Again, we do not store the mmap, as this is shared
-#[derive(Debug)]
-struct CompletionQueue {
-    off: io_cqring_offsets,
-    mask: u32,
-    entries: u32,
-}
-
-impl CompletionQueue {
-    fn new(p: &io_uring_params, mask: u32) -> Self {
-        Self { off: p.cq_off, mask, entries: p.cq_entries }
-    }
-}
-
 mod err {
     use crate::rustix::io::Errno;
     #[derive(Debug, Eq, PartialEq)]
@@ -992,7 +989,7 @@ mod zig_tests {
         assert_eq!(ring.sq.sqe_head, 0);
         assert_eq!(ring.sq.sqe_tail, 1);
         assert_eq!(ring.shared.sq_tail(), 0);
-        assert_eq!(ring.shared.cq_head(), 0);
+        assert_eq!(ring.shared.cq_head() & ring.cq_mask, 0);
         assert_eq!(ring.sq_ready(), 1);
         assert_eq!(ring.cq_ready(), 0);
 

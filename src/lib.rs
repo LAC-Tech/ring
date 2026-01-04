@@ -14,12 +14,12 @@
 //!
 //! # Example
 //!
-//! ```
+//! ```no_run
 #![doc = include_str!("../examples/readme.rs")]
 //! ```
 //! 
 //! Or, in `no_std`:
-//! ```
+//! ```no_run
 #![doc = include_str!("../examples/readme_no_std.rs")]
 //! ```
 
@@ -56,6 +56,7 @@ pub struct IoUring {
     cq: CompletionQueue,
 }
 
+use rustix::io::Errno;
 impl IoUring {
     /// A friendly way to setup an io_uring, with default linux.io_uring_params.
     /// `entries` must be a power of two between 1 and 32768, although the
@@ -67,13 +68,24 @@ impl IoUring {
         params.sq_thread_idle = 1000;
         Self::new_with_params(entries, &mut params)
     }
-
     /// A powerful way to setup an `io_uring`, if you want to tweak
     /// `io_uring_params` such as submission queue thread cpu affinity
     /// or thread idle timeout (the kernel and our default is 1 second).
     /// `params` is passed by reference because the kernel needs to modify the
     /// parameters. Matches the interface of `io_uring_queue_init_params()` in
     /// liburing.
+    ///
+    /// # Errors
+    ///
+    /// An [`err::Init::Os`] can be:
+    ///  - [`Errno::INVAL`] The resv array contains non-zero data, p.flags
+    ///    contains an unsupported flag, entries out of bounds,
+    ///    [`IoringSetupFlags::SQ_AFF`] was specified without
+    ///    [`IoringSetupFlags::SQPOLL`], or [`IoringSetupFlags::CQSIZE`] was
+    ///    specified but linux.io_uring_params.cq_entries was invalid.
+    /// - [`Errno::INVAL`] [`IoringSetupFlags::SQPOLL`] was specified but
+    ///   effective user ID lacks sufficient privileges, or a container seccomp
+    ///   policy prohibits io_uring syscalls.
     pub fn new_with_params(
         entries: u32,
         p: &mut io_uring_params,
@@ -277,7 +289,7 @@ impl IoUring {
         false
     }
 
-    /// Returns the number of flushed and unflushed SQEs pending in the
+    /// Returns the number of flushed and unflushed SQEs pending in the///
     /// submission queue. In other words, this is the number of SQEs in the
     /// submission queue, i.e. its length. These are SQEs that the kernel is
     /// yet to consume. Matches the implementation of `io_uring_sq_ready` in
@@ -670,7 +682,7 @@ struct CompletionQueue {
     entries: u32,
 }
 
-mod err {
+pub mod err {
     use crate::rustix::io::Errno;
     #[derive(Debug, Eq, PartialEq)]
     pub enum Init {

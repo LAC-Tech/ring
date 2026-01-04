@@ -100,23 +100,18 @@ impl IoUring {
         // The kernel will initialize the fields of `p`.
         let res = unsafe { io_uring_setup(entries, p) };
         let fd = res.map_err(|errno| match errno {
-            Errno::FAULT => ParamsOutsideAccessibleAddressSpace,
             // The resv array contains non-zero data, p.flags contains an
             // unsupported flag, entries out of bounds,
             // `IORING_SETUP_SQ_AFF` was specified without
             // `IORING_SETUP_SQPOLL`, or `IORING_SETUP_CQSIZE` was
             // specified but `io_uring_params.cq_entries` was
             // invalid:
-            Errno::INVAL => ArgumentsInvalid,
-            Errno::MFILE => ProcessFdQuotaExceeded,
-            Errno::NFILE => SystemFdQuotaExceeded,
-            Errno::NOMEM => SystemResources,
+            Errno::INVAL => Os(errno),
             // `IORING_SETUP_SQPOLL` was specified but effective user ID lacks
             // sufficient privileges, or a container seccomp policy
             // prohibits `io_uring` syscalls:
-            Errno::PERM => PermissionDenied,
-            Errno::NOSYS => SystemOutdated,
-            _ => UnexpectedErrno(errno),
+            Errno::PERM => Os(errno),
+            _ => Os(errno),
         })?;
 
         // Kernel versions 5.4 and up use only one mmap() for the submission and
@@ -131,7 +126,7 @@ impl IoUring {
         // to keep the init/deinit mmap paths simple and because
         // io_uring has had many bug fixes even since 5.4.
         if !p.features.contains(IoringFeatureFlags::SINGLE_MMAP) {
-            return Err(SystemOutdated);
+            return Err(SingleMmapUnsupported);
         }
 
         if p.flags.contains(IoringSetupFlags::CQE32) {
@@ -145,9 +140,9 @@ impl IoUring {
         assert!(p.cq_entries >= p.sq_entries);
 
         let (shared, ring_masks) =
-            mmap::Ioring::new(fd.as_fd(), p).map_err(UnexpectedErrno)?;
+            mmap::Ioring::new(fd.as_fd(), p).map_err(Os)?;
 
-        let sqes = mmap::Sqes::new(fd.as_fd(), p).map_err(UnexpectedErrno)?;
+        let sqes = mmap::Sqes::new(fd.as_fd(), p).map_err(Os)?;
 
         let sq = SubmissionQueue {
             entries: p.sq_entries,
@@ -724,19 +719,14 @@ struct CompletionQueue {
 
 mod err {
     use crate::rustix::io::Errno;
+    use core::fmt;
     #[derive(Debug, Eq, PartialEq)]
     pub enum Init {
         EntriesZero,
         EntriesNotPowerOfTwo,
-        ParamsOutsideAccessibleAddressSpace,
-        ArgumentsInvalid,
-        ProcessFdQuotaExceeded,
-        SystemFdQuotaExceeded,
-        SystemResources,
-        PermissionDenied,
-        SystemOutdated,
         CQE32Unsupported,
-        UnexpectedErrno(Errno),
+        SingleMmapUnsupported,
+        Os(Errno),
     }
 
     #[derive(Debug, Eq, PartialEq)]

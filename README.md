@@ -21,7 +21,7 @@ It's heavily based off of std.os.linux.IoUring.zig, but also takes some pointers
 | readv                                          | ✅     |
 | writev/fsync/readv                             | ✅     |
 | write/read                                     | ✅     |
-| splice/read                                    | ❌     |
+| splice/read                                    | ✅     |
 | write_fixed/read_fixed                         | ❌     |
 | openat                                         | ❌     |
 | close                                          | ❌     |

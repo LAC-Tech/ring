@@ -238,7 +238,7 @@ impl IoUring {
     ///
     /// # Errors
     ///
-    /// An [`io::Result`] can be:
+    /// An [`io::Errno`] can be:
     /// - [`Errno::AGAIN`] The kernel was unable to allocate memory or ran out
     ///   of resources for the request. The application should wait for some
     ///   completions and try again.
@@ -449,6 +449,25 @@ impl IoUring {
     /// # Panics
     ///
     /// If the length of the `fds` cannot fit in a `u32`.
+    ///
+    /// # Errors
+    ///
+    /// An [`io::Errno`] can be:
+    /// - [`Errno::BADF`] One or more fds in the array are invalid, or the
+    ///   kernel does not support sparse sets.
+    /// - [`Errno::BUSY`] Files are already registered.
+    /// - [`Errno::INVAL`] Files array is empty.
+    /// - [`Errno::MFILE`] Adding file references would exceed the maximum
+    ///   allowed number of files the user is allowed to have according to the
+    ///   per-user RLIMIT_NOFILE resource limit and the CAP_SYS_RESOURCE
+    ///   capability is not set, or exceeds the maximum allowed for a fixed file
+    ///   set (older kernels have a limit of 1024 files vs 64K files).
+    /// - [`Errno::NOMEM`] Insufficient kernel resources, or the caller had a
+    ///   non-zero RLIMIT_MEMLOCK soft resource limit but tried to lock more
+    ///   memory than the limit permitted (not enforced when the process is
+    ///   privileged with CAP_IPC_LOCK).
+    /// - [`Errno::NXIO`] Attempt to register files on a ring already
+    ///   registering files or being torn down.
     pub unsafe fn register_files(&self, fds: &[BorrowedFd]) -> io::Result<u32> {
         io_uring_register(
             self.fd(),

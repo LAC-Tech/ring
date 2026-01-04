@@ -6,7 +6,8 @@ use core::ptr;
 use core::sync::atomic::{AtomicU32, Ordering};
 use rustix::fd::BorrowedFd;
 use rustix::io_uring::{
-    io_uring_params, io_uring_sqe, IORING_OFF_SQES, IORING_OFF_SQ_RING,
+    io_cqring_offsets, io_sqring_offsets, io_uring_params, io_uring_sqe,
+    IoringSqFlags, IORING_OFF_SQES, IORING_OFF_SQ_RING,
 };
 use rustix::{io, mm};
 use std::os::fd::AsFd;
@@ -117,7 +118,11 @@ impl IndexMut<u32> for Sqes {
 }
 
 #[derive(Debug)]
-pub struct Ioring(Mmap);
+pub struct Ioring {
+    mmap: Mmap,
+    sq_off: io_sqring_offsets,
+    cq_off: io_cqring_offsets,
+}
 
 impl Ioring {
     pub fn new(
@@ -134,7 +139,8 @@ impl Ioring {
             mm::MapFlags::SHARED | mm::MapFlags::POPULATE,
             IORING_OFF_SQ_RING,
         )?;
-        Ok(Self(mmap))
+
+        Ok(Self { mmap, sq_off: p.sq_off, cq_off: p.cq_off })
     }
 }
 
@@ -145,8 +151,8 @@ impl Ioring {
     /// The caller must ensure that the memory at `byte_offset` contains a valid
     /// u32.
     // just avoids a bit of line noise all the times I do this
-    pub unsafe fn u32_at(&self, byte_offset: u32) -> u32 {
-        *self.0.ptr_at(byte_offset)
+    unsafe fn u32_at(&self, byte_offset: u32) -> u32 {
+        *self.mmap.ptr_at(byte_offset)
     }
 
     /// # Safety
@@ -155,7 +161,7 @@ impl Ioring {
     /// atomic access as a u32.
     // Atomic needs a mutable ptr but we never mutate the value
     // So this method avoids &mut self when we just want to read
-    pub unsafe fn atomic_load_u32_at(
+    unsafe fn atomic_load_u32_at(
         &self,
         byte_offset: u32,
         ordering: Ordering,
@@ -170,7 +176,7 @@ impl Ioring {
     ///
     /// The caller must ensure that the memory at `byte_offset` is valid for
     /// atomic access as a u32.
-    pub unsafe fn atomic_u32_at(&mut self, byte_offset: u32) -> &AtomicU32 {
+    unsafe fn atomic_u32_at(&mut self, byte_offset: u32) -> &AtomicU32 {
         AtomicU32::from_ptr(self.0.mut_ptr_at(byte_offset))
     }
 
@@ -184,7 +190,7 @@ impl Ioring {
     ///
     /// The caller must ensure that the memory starting at `byte_offset` is a
     /// valid representation of `len` elements of type `T`.
-    pub unsafe fn slice_at<T>(&self, byte_offset: u32, len: u32) -> &[T] {
+    unsafe fn slice_at<T>(&self, byte_offset: u32, len: u32) -> &[T] {
         &*self.raw_slice_at(byte_offset, len)
     }
 
@@ -192,11 +198,34 @@ impl Ioring {
     ///
     /// The caller must ensure that the memory starting at `byte_offset` is a
     /// valid representation of `len` elements of type `T`.
-    pub unsafe fn mut_slice_at<T>(
+    unsafe fn mut_slice_at<T>(
         &mut self,
         byte_offset: u32,
         len: u32,
     ) -> &mut [T] {
         &mut *self.raw_slice_at(byte_offset, len)
+    }
+
+    // man 7 io_uring:
+    // - "You add SQEs to the tail of the SQ. The kernel reads SQEs off the head
+    //   of the queue."
+    pub fn sq_head(&self) -> u32 {
+        // SAFETY: The offset is provided by the kernel.
+        unsafe { self.atomic_load_u32_at(self.sq_off.head, Ordering::Acquire) }
+    }
+
+    pub fn sq_flag_contains(&self, flag: IoringSqFlags) -> bool {
+        // SAFETY: The offset is provided by the kernel.
+        let bits = unsafe {
+            self.atomic_load_u32_at(self.sq_off.flags, Ordering::Relaxed)
+        };
+        let flags = IoringSqFlags::from_bits_retain(bits);
+        flags.contains(flag)
+    }
+
+    // This method helped me catch a bug. I do not care if it is shallow.
+    pub fn sq_tail(&self) -> u32 {
+        // SAFETY: The offset is provided by the kernel.
+        unsafe { self.u32_at(self.sq_off.tail) }
     }
 }

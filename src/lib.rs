@@ -218,7 +218,17 @@ impl IoUring {
     /// queue is full. We follow the implementation (and atomics) of
     /// liburing's `io_uring_get_sqe()`, EXCEPT that the fields are zeroed out.
     pub fn get_sqe(&mut self) -> Result<&mut io_uring_sqe, err::GetSqe> {
-        let sqe = self.sq.get_sqe(&self.mmap)?;
+        let head = self.mmap.sq_head();
+        // Remember that these head and tail offsets wrap around every four
+        // billion operations. We must therefore use wrapping addition
+        // and subtraction to avoid a runtime crash.
+        let next = self.sq.sqe_tail.wrapping_add(1);
+        if next.wrapping_sub(head) > self.sq.entries {
+            return Err(err::GetSqe::SubmissionQueueFull);
+        }
+
+        let sqe = &mut self.sq.mmap_entries[self.sq.sqe_tail & self.sq.mask];
+        self.sq.sqe_tail = next;
         *sqe = io_uring_sqe::default();
         Ok(sqe)
     }
@@ -311,7 +321,32 @@ impl IoUring {
     /// is needed rather than not. Matches the implementation of
     /// `__io_uring_flush_sq()` in liburing.
     pub fn flush_sq(&mut self) -> u32 {
-        self.sq.flush(&mut self.mmap)
+        if self.sq.sqe_head != self.sq.sqe_tail {
+            // Fill in SQEs that we have queued up, adding them to the
+            // kernel ring.
+            let to_submit = self.sq.sqe_tail.wrapping_sub(self.sq.sqe_head);
+            let mut new_tail = self.mmap.sq_tail();
+
+            // SAFETY: Offset and length provided by the kernel
+            let array = unsafe {
+                mmap.mut_slice_at::<u32>(self.off.array, self.entries)
+            };
+
+            for _ in 0..to_submit {
+                array[(new_tail & self.mask) as usize] =
+                    self.sqe_head & self.mask;
+                new_tail = new_tail.wrapping_add(1);
+                self.sqe_head = self.sqe_head.wrapping_add(1);
+            }
+
+            // Ensure that the kernel can actually see the SQE updates when
+            // it sees the tail update.
+            // SAFETY: The offset is provided by the kernel.
+            let tail = unsafe { mmap.atomic_u32_at(self.off.tail) };
+            tail.store(new_tail, Ordering::Release);
+        }
+
+        self.sq_ready()
     }
 
     /// Returns true if we are not using an SQ thread (thus nobody submits but
@@ -328,7 +363,7 @@ impl IoUring {
             return true;
         }
 
-        if self.sq.flag_contains(&self.mmap, IoringSqFlags::NEED_WAKEUP) {
+        if self.mmap.sq_flag_contains(IoringSqFlags::NEED_WAKEUP) {
             flags.set(IoringEnterFlags::SQ_WAKEUP, true);
             return true;
         }
@@ -341,7 +376,7 @@ impl IoUring {
     /// yet to consume. Matches the implementation of `io_uring_sq_ready` in
     /// liburing.
     pub fn sq_ready(&mut self) -> u32 {
-        self.sq.ready(&mut self.mmap)
+        self.sq.sqe_tail.wrapping_sub(self.mmap.sq_head())
     }
 
     /// Returns the number of CQEs in the completion queue, i.e. its length.
@@ -407,7 +442,7 @@ impl IoUring {
 
     /// Matches the implementation of `cq_ring_needs_flush()` in liburing.
     pub fn cq_ring_needs_flush(&mut self) -> bool {
-        self.sq.flag_contains(&self.mmap, IoringSqFlags::CQ_OVERFLOW)
+        self.mmap.sq_flag_contains(IoringSqFlags::CQ_OVERFLOW)
     }
 
     /// For advanced use cases only that implement custom completion queue
@@ -731,48 +766,6 @@ impl SubmissionQueue {
         Ok(sq)
     }
 
-    // man 7 io_uring:
-    // - "You add SQEs to the tail of the SQ. The kernel reads SQEs off the head
-    //   of the queue."
-    fn read_head(&self, mmap: &mmap::Ioring) -> u32 {
-        // SAFETY: The offset is provided by the kernel.
-        unsafe { mmap.atomic_load_u32_at(self.off.head, Ordering::Acquire) }
-    }
-
-    fn flag_contains(&self, mmap: &mmap::Ioring, flag: IoringSqFlags) -> bool {
-        // SAFETY: The offset is provided by the kernel.
-        let bits = unsafe {
-            mmap.atomic_load_u32_at(self.off.flags, Ordering::Relaxed)
-        };
-        let flags = IoringSqFlags::from_bits_retain(bits);
-        flags.contains(flag)
-    }
-
-    // This method helped me catch a bug. I do not care if it is shallow.
-    fn read_tail(&self, mmap: &mmap::Ioring) -> u32 {
-        // SAFETY: The offset is provided by the kernel.
-        unsafe { mmap.u32_at(self.off.tail) }
-    }
-
-    fn get_sqe(
-        &mut self,
-        mmap: &mmap::Ioring,
-    ) -> Result<&mut io_uring_sqe, err::GetSqe> {
-        let head = self.read_head(mmap);
-        // Remember that these head and tail offsets wrap around every four
-        // billion operations. We must therefore use wrapping addition
-        // and subtraction to avoid a runtime crash.
-        let next = self.sqe_tail.wrapping_add(1);
-        if next.wrapping_sub(head) > self.entries {
-            return Err(err::GetSqe::SubmissionQueueFull);
-        }
-
-        let sqe = &mut self.mmap_entries[self.sqe_tail & self.mask];
-        self.sqe_tail = next;
-
-        Ok(&mut *sqe)
-    }
-
     fn flush(&mut self, mmap: &mut mmap::Ioring) -> u32 {
         if self.sqe_head != self.sqe_tail {
             // Fill in SQEs that we have queued up, adding them to the
@@ -800,12 +793,6 @@ impl SubmissionQueue {
         }
 
         self.ready(mmap)
-    }
-
-    fn ready(&mut self, mmap: &mut mmap::Ioring) -> u32 {
-        // Always use the shared ring state (i.e. not self.sqe_head) to
-        // avoid going out of sync, see https://github.com/axboe/liburing/issues/92.
-        self.sqe_tail.wrapping_sub(self.read_head(mmap))
     }
 }
 

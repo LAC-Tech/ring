@@ -45,42 +45,6 @@ use rustix::io_uring::{
     IoringFeatureFlags, IoringRegisterOp, IoringSetupFlags, IoringSqFlags,
     IoringSqeFlags, IORING_OFF_CQ_RING, IORING_OFF_SQES, IORING_OFF_SQ_RING,
 };
-use rustix::mm;
-
-// Sanity check that we can cast from u32 to usize
-const _: () = assert!(usize::BITS >= 32);
-
-// I am constantly using these - makes it a little bit cleaner
-const U32_SIZE: u32 = mem::size_of::<u32>() as u32;
-const SQE_SIZE: u32 = mem::size_of::<io_uring_sqe>() as u32;
-const CQE_SIZE: u32 = mem::size_of::<Cqe>() as u32;
-
-const _: () = assert!(U32_SIZE == 4); // rofl why not
-
-// Taken from the zig test "structs/offsets/entries"
-// Because this is a 3rd party lib we can be more aggressive about preventing
-// compilation.
-const _: () = {
-    assert!(mem::size_of::<io_uring_params>() == 120);
-    assert!(SQE_SIZE == 64);
-    assert!(CQE_SIZE == 16);
-
-    assert!(IORING_OFF_SQ_RING == 0);
-    assert!(IORING_OFF_CQ_RING == 0x8000000);
-    assert!(IORING_OFF_SQES == 0x10000000);
-};
-
-/// An io_uring Completion Queue Entry.
-///
-/// While rustix provides one, it has some issues:
-/// <https://github.com/bytecodealliance/rustix/issues/1568>
-#[repr(C)]
-#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
-pub struct Cqe {
-    pub user_data: io_uring_user_data,
-    pub res: i32,
-    pub flags: IoringCqeFlags,
-}
 
 /// The main entry point to the library.
 #[derive(Debug)]
@@ -218,6 +182,15 @@ impl IoUring {
     /// queue is full. We follow the implementation (and atomics) of
     /// liburing's `io_uring_get_sqe()`, EXCEPT that the fields are zeroed out.
     pub fn get_sqe(&mut self) -> Result<&mut io_uring_sqe, err::GetSqe> {
+        let sqe = self.get_sqe_raw()?;
+        *sqe = io_uring_sqe::default();
+        Ok(sqe)
+    }
+
+    /// Returns a reference to a vacant SQE, or an error if the submission
+    /// queue is full. We follow the implementation (and atomics) of
+    /// liburing's `io_uring_get_sqe()` exactly.
+    pub fn get_sqe_raw(&mut self) -> Result<&mut io_uring_sqe, err::GetSqe> {
         let head = self.mmap.sq_head();
         // Remember that these head and tail offsets wrap around every four
         // billion operations. We must therefore use wrapping addition
@@ -227,17 +200,9 @@ impl IoUring {
             return Err(err::GetSqe::SubmissionQueueFull);
         }
 
-        let sqe = &mut self.sq.mmap_entries[self.sq.sqe_tail & self.sq.mask];
+        let sqe = &mut self.sq.sqes[self.sq.sqe_tail & self.sq.mask];
         self.sq.sqe_tail = next;
-        *sqe = io_uring_sqe::default();
         Ok(sqe)
-    }
-
-    /// Returns a reference to a vacant SQE, or an error if the submission
-    /// queue is full. We follow the implementation (and atomics) of
-    /// liburing's `io_uring_get_sqe()` exactly.
-    pub fn get_sqe_raw(&mut self) -> Result<&mut io_uring_sqe, err::GetSqe> {
-        self.sq.get_sqe(&self.mmap)
     }
 
     /// Submits the SQEs acquired via [`Self::get_sqe()`] to the kernel. You can
@@ -327,23 +292,18 @@ impl IoUring {
             let to_submit = self.sq.sqe_tail.wrapping_sub(self.sq.sqe_head);
             let mut new_tail = self.mmap.sq_tail();
 
-            // SAFETY: Offset and length provided by the kernel
-            let array = unsafe {
-                mmap.mut_slice_at::<u32>(self.off.array, self.entries)
-            };
+            let array = self.mmap.sqe_indices();
 
             for _ in 0..to_submit {
-                array[(new_tail & self.mask) as usize] =
-                    self.sqe_head & self.mask;
+                array[(new_tail & self.sq.mask) as usize] =
+                    self.sq.sqe_head & self.sq.mask;
                 new_tail = new_tail.wrapping_add(1);
-                self.sqe_head = self.sqe_head.wrapping_add(1);
+                self.sq.sqe_head = self.sq.sqe_head.wrapping_add(1);
             }
 
             // Ensure that the kernel can actually see the SQE updates when
             // it sees the tail update.
-            // SAFETY: The offset is provided by the kernel.
-            let tail = unsafe { mmap.atomic_u32_at(self.off.tail) };
-            tail.store(new_tail, Ordering::Release);
+            self.mmap.sq_tail_write(new_tail);
         }
 
         self.sq_ready()
@@ -733,7 +693,7 @@ impl SqeExt for &mut io_uring_sqe {
 #[derive(Debug)]
 struct SubmissionQueue {
     // Contains the array with the actual sq entries
-    mmap_entries: mmap::Sqes,
+    sqes: mmap::Sqes,
     off: io_sqring_offsets,
     entries: u32,
     mask: u32,
@@ -757,42 +717,13 @@ impl SubmissionQueue {
         let sq = Self {
             entries: p.sq_entries,
             off: p.sq_off,
-            mmap_entries: mmap::Sqes::new(fd, &p)?,
+            sqes: mmap::Sqes::new(fd, &p)?,
             mask,
             sqe_head: 0,
             sqe_tail: 0,
         };
 
         Ok(sq)
-    }
-
-    fn flush(&mut self, mmap: &mut mmap::Ioring) -> u32 {
-        if self.sqe_head != self.sqe_tail {
-            // Fill in SQEs that we have queued up, adding them to the
-            // kernel ring.
-            let to_submit = self.sqe_tail.wrapping_sub(self.sqe_head);
-            let mut new_tail = self.read_tail(mmap);
-
-            // SAFETY: Offset and length provided by the kernel
-            let array = unsafe {
-                mmap.mut_slice_at::<u32>(self.off.array, self.entries)
-            };
-
-            for _ in 0..to_submit {
-                array[(new_tail & self.mask) as usize] =
-                    self.sqe_head & self.mask;
-                new_tail = new_tail.wrapping_add(1);
-                self.sqe_head = self.sqe_head.wrapping_add(1);
-            }
-
-            // Ensure that the kernel can actually see the SQE updates when
-            // it sees the tail update.
-            // SAFETY: The offset is provided by the kernel.
-            let tail = unsafe { mmap.atomic_u32_at(self.off.tail) };
-            tail.store(new_tail, Ordering::Release);
-        }
-
-        self.ready(mmap)
     }
 }
 
@@ -855,8 +786,6 @@ impl CompletionQueue {
         let ring_cqes =
             unsafe { mmap.slice_at::<Cqe>(self.off.cqes, self.entries) };
 
-        // io_uring_cqe is not copyable; it has an array field "big_cqe"
-        // since big_cqe never seems to be read we shall copy it anyway
         {
             let head = head as usize;
             cqes[..n].clone_from_slice(&ring_cqes[head..head + n]);
@@ -1129,7 +1058,7 @@ mod zig_tests {
 
         assert_eq!(ring.sq.sqe_head, 0);
         assert_eq!(ring.sq.sqe_tail, 1);
-        assert_eq!(ring.sq.read_tail(&mut ring.mmap), 0);
+        assert_eq!(ring.mmap.sq_tail(), 0);
         assert_eq!(ring.cq.read_head(&mut ring.mmap), 0);
         assert_eq!(ring.sq_ready(), 1);
         assert_eq!(ring.cq_ready(), 0);
@@ -1137,7 +1066,7 @@ mod zig_tests {
         assert_eq!(unsafe { ring.submit() }, Ok(1));
         assert_eq!(ring.sq.sqe_head, 1);
         assert_eq!(ring.sq.sqe_tail, 1);
-        assert_eq!(ring.sq.read_tail(&mut ring.mmap), 1);
+        assert_eq!(ring.mmap.sq_tail(), 1);
         assert_eq!(ring.cq.read_head(&mut ring.mmap), 0);
         assert_eq!(ring.sq_ready(), 0);
 
@@ -1158,7 +1087,7 @@ mod zig_tests {
         assert_eq!(cqe.flags, IoringCqeFlags::empty());
         assert_eq!(ring.sq.sqe_head, 2);
         assert_eq!(ring.sq.sqe_tail, 2);
-        assert_eq!(ring.sq.read_tail(&mut ring.mmap), 2);
+        assert_eq!(ring.mmap.sq_tail(), 2);
         assert_eq!(ring.cq.read_head(&mut ring.mmap), 2);
 
         assert_ring_clean(&mut ring);

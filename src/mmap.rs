@@ -7,12 +7,46 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use rustix::fd::BorrowedFd;
 use rustix::io_uring::{
     io_cqring_offsets, io_sqring_offsets, io_uring_params, io_uring_sqe,
-    IoringSqFlags, IORING_OFF_SQES, IORING_OFF_SQ_RING,
+    io_uring_user_data, IoringCqeFlags, IoringSqFlags, IORING_OFF_CQ_RING,
+    IORING_OFF_SQES, IORING_OFF_SQ_RING,
 };
 use rustix::{io, mm};
 use std::os::fd::AsFd;
 
-use crate::{CQE_SIZE, SQE_SIZE, U32_SIZE};
+// Sanity check that we can cast from u32 to usize
+const _: () = assert!(usize::BITS >= 32);
+
+// I am constantly using these - makes it a little bit cleaner
+const U32_SIZE: u32 = mem::size_of::<u32>() as u32;
+const SQE_SIZE: u32 = mem::size_of::<io_uring_sqe>() as u32;
+const CQE_SIZE: u32 = mem::size_of::<Cqe>() as u32;
+
+const _: () = assert!(U32_SIZE == 4); // rofl why not
+
+// Taken from the zig test "structs/offsets/entries"
+// Because this is a 3rd party lib we can be more aggressive about preventing
+// compilation.
+const _: () = {
+    assert!(mem::size_of::<io_uring_params>() == 120);
+    assert!(SQE_SIZE == 64);
+    assert!(CQE_SIZE == 16);
+
+    assert!(IORING_OFF_SQ_RING == 0);
+    assert!(IORING_OFF_CQ_RING == 0x8000000);
+    assert!(IORING_OFF_SQES == 0x10000000);
+};
+
+/// An io_uring Completion Queue Entry.
+///
+/// While rustix provides one, it has some issues:
+/// <https://github.com/bytecodealliance/rustix/issues/1568>
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub struct Cqe {
+    pub user_data: io_uring_user_data,
+    pub res: i32,
+    pub flags: IoringCqeFlags,
+}
 
 // Convenience struct so mmap's are un-mapped on drop
 #[derive(Debug)]
@@ -122,6 +156,8 @@ pub struct Ioring {
     mmap: Mmap,
     sq_off: io_sqring_offsets,
     cq_off: io_cqring_offsets,
+    sq_entries: u32,
+    cq_entries: u32,
 }
 
 impl Ioring {
@@ -129,9 +165,23 @@ impl Ioring {
         ring_fd: BorrowedFd,
         p: &io_uring_params,
     ) -> rustix::io::Result<Self> {
-        let size = cmp::max::<u32>(
-            p.sq_off.array + p.sq_entries * U32_SIZE,
-            p.cq_off.cqes + p.cq_entries * CQE_SIZE,
+        let io_uring_params {
+            sq_entries,
+            cq_entries,
+            flags,
+            sq_thread_cpu,
+            sq_thread_idle,
+            features,
+            wq_fd,
+            resv,
+            sq_off,
+            cq_off,
+            ..
+        } = *p;
+
+        let size = cmp::max(
+            sq_off.array + sq_entries * U32_SIZE,
+            cq_off.cqes + cq_entries * CQE_SIZE,
         ) as usize;
         let mmap = Mmap::new(
             size,
@@ -140,17 +190,55 @@ impl Ioring {
             IORING_OFF_SQ_RING,
         )?;
 
-        Ok(Self { mmap, sq_off: p.sq_off, cq_off: p.cq_off })
+        Ok(Self { mmap, sq_off, cq_off, sq_entries, cq_entries })
     }
 }
 
 // All our pointer accesses are by u32s..
 impl Ioring {
+    // man 7 io_uring:
+    // - "You add SQEs to the tail of the SQ. The kernel reads SQEs off the head
+    //   of the queue."
+    pub fn sq_head(&self) -> u32 {
+        // SAFETY: The offset is provided by the kernel.
+        unsafe { self.atomic_load_u32_at(self.sq_off.head, Ordering::Acquire) }
+    }
+
+    pub fn sq_flag_contains(&self, flag: IoringSqFlags) -> bool {
+        // SAFETY: The offset is provided by the kernel.
+        let bits = unsafe {
+            self.atomic_load_u32_at(self.sq_off.flags, Ordering::Relaxed)
+        };
+        let flags = IoringSqFlags::from_bits_retain(bits);
+        flags.contains(flag)
+    }
+
+    // This method helped me catch a bug. I do not care if it is shallow.
+    pub fn sq_tail(&self) -> u32 {
+        // SAFETY: The offset is provided by the kernel.
+        unsafe { self.u32_at(self.sq_off.tail) }
+    }
+
+    pub fn sq_tail_write(&mut self, new_tail: u32) {
+        // SAFETY: The offset is provided by the kernel.
+        let tail = unsafe { self.atomic_u32_at(self.sq_off.tail) };
+        tail.store(new_tail, Ordering::Release);
+    }
+
+    pub fn sqe_indices(&mut self) -> &mut [u32] {
+        // SAFETY: Offset and length provided by the kernel
+        unsafe { self.mut_slice_at::<u32>(self.sq_off.array, self.sq_entries) }
+    }
+
+    pub fn cqes(&self) -> &[Cqe] {
+        // SAFETY: Offset and length provided by the kernel
+        unsafe { self.slice_at::<Cqe>(self.cq_off.cqes, self.cq_entries) }
+    }
+
     /// # Safety
     ///
     /// The caller must ensure that the memory at `byte_offset` contains a valid
     /// u32.
-    // just avoids a bit of line noise all the times I do this
     unsafe fn u32_at(&self, byte_offset: u32) -> u32 {
         *self.mmap.ptr_at(byte_offset)
     }
@@ -159,14 +247,12 @@ impl Ioring {
     ///
     /// The caller must ensure that the memory at `byte_offset` is valid for
     /// atomic access as a u32.
-    // Atomic needs a mutable ptr but we never mutate the value
-    // So this method avoids &mut self when we just want to read
     unsafe fn atomic_load_u32_at(
         &self,
         byte_offset: u32,
         ordering: Ordering,
     ) -> u32 {
-        let ptr = self.0.ptr_at::<u32>(byte_offset) as *mut u32;
+        let ptr = self.mmap.ptr_at::<u32>(byte_offset) as *mut u32;
         AtomicU32::from_ptr(ptr).load(ordering)
     }
 
@@ -204,28 +290,5 @@ impl Ioring {
         len: u32,
     ) -> &mut [T] {
         &mut *self.raw_slice_at(byte_offset, len)
-    }
-
-    // man 7 io_uring:
-    // - "You add SQEs to the tail of the SQ. The kernel reads SQEs off the head
-    //   of the queue."
-    pub fn sq_head(&self) -> u32 {
-        // SAFETY: The offset is provided by the kernel.
-        unsafe { self.atomic_load_u32_at(self.sq_off.head, Ordering::Acquire) }
-    }
-
-    pub fn sq_flag_contains(&self, flag: IoringSqFlags) -> bool {
-        // SAFETY: The offset is provided by the kernel.
-        let bits = unsafe {
-            self.atomic_load_u32_at(self.sq_off.flags, Ordering::Relaxed)
-        };
-        let flags = IoringSqFlags::from_bits_retain(bits);
-        flags.contains(flag)
-    }
-
-    // This method helped me catch a bug. I do not care if it is shallow.
-    pub fn sq_tail(&self) -> u32 {
-        // SAFETY: The offset is provided by the kernel.
-        unsafe { self.u32_at(self.sq_off.tail) }
     }
 }

@@ -37,7 +37,6 @@ use core::ffi::c_void;
 use core::ptr::null;
 use core::sync::atomic::Ordering;
 use core::{assert, assert_eq, assert_ne, cmp, mem};
-use mmap::IoringMmap;
 use rustix::fd::{AsFd, AsRawFd, OwnedFd};
 use rustix::io;
 use rustix::io_uring::{
@@ -54,7 +53,6 @@ const _: () = assert!(usize::BITS >= 32);
 // I am constantly using these - makes it a little bit cleaner
 const U32_SIZE: u32 = mem::size_of::<u32>() as u32;
 const CQE_SIZE: u32 = mem::size_of::<Cqe>() as u32;
-const SQE_SIZE: u32 = mem::size_of::<io_uring_sqe>() as u32;
 
 const _: () = assert!(U32_SIZE == 4); // rofl why not
 
@@ -63,7 +61,7 @@ const _: () = assert!(U32_SIZE == 4); // rofl why not
 // compilation.
 const _: () = {
     assert!(mem::size_of::<io_uring_params>() == 120);
-    assert!(SQE_SIZE == 64);
+    assert!(mmap::SQE_SIZE == 64);
     assert!(CQE_SIZE == 16);
 
     assert!(IORING_OFF_SQ_RING == 0);
@@ -88,7 +86,7 @@ pub struct Cqe {
 pub struct IoUring {
     fd: OwnedFd,
     // A single mmap call that contains both the sq and cq
-    mmap: IoringMmap,
+    mmap: mmap::Ioring,
     flags: IoringSetupFlags,
     features: IoringFeatureFlags,
     sq: SubmissionQueue,
@@ -179,7 +177,7 @@ impl IoUring {
             p.cq_off.cqes + p.cq_entries * CQE_SIZE,
         ) as usize;
 
-        let mmap = IoringMmap::new(
+        let mmap = mmap::Ioring::new(
             size,
             fd.as_fd(),
             mm::MapFlags::SHARED | mm::MapFlags::POPULATE,
@@ -709,7 +707,7 @@ impl SqeExt for &mut io_uring_sqe {
 #[derive(Debug)]
 struct SubmissionQueue {
     // Contains the array with the actual sq entries
-    mmap_entries: IoringMmap,
+    mmap_entries: mmap::Sqes,
     off: io_sqring_offsets,
     entries: u32,
     mask: u32,
@@ -730,25 +728,10 @@ impl SubmissionQueue {
         fd: BorrowedFd<'_>,
         mask: u32,
     ) -> io::Result<Self> {
-        /*
-         * TODO: wtf does this mean:
-         * "The motivation for the `sqes` and `array` indirection is to
-         * make it possible for the application to preallocate static
-         * linux.io_uring_sqe entries and then replay them when needed."
-         */
-        let size_sqes = (p.sq_entries * SQE_SIZE) as usize;
-
-        let mmap_entries = IoringMmap::new(
-            size_sqes,
-            fd,
-            mm::MapFlags::SHARED | mm::MapFlags::POPULATE,
-            IORING_OFF_SQES,
-        )?;
-
         let sq = Self {
             entries: p.sq_entries,
             off: p.sq_off,
-            mmap_entries,
+            mmap_entries: mmap::Sqes::new(fd, &p)?,
             mask,
             sqe_head: 0,
             sqe_tail: 0,
@@ -760,12 +743,12 @@ impl SubmissionQueue {
     // man 7 io_uring:
     // - "You add SQEs to the tail of the SQ. The kernel reads SQEs off the head
     //   of the queue."
-    fn read_head(&self, mmap: &IoringMmap) -> u32 {
+    fn read_head(&self, mmap: &mmap::Ioring) -> u32 {
         // SAFETY: The offset is provided by the kernel.
         unsafe { mmap.atomic_load_u32_at(self.off.head, Ordering::Acquire) }
     }
 
-    fn flag_contains(&self, mmap: &IoringMmap, flag: IoringSqFlags) -> bool {
+    fn flag_contains(&self, mmap: &mmap::Ioring, flag: IoringSqFlags) -> bool {
         // SAFETY: The offset is provided by the kernel.
         let bits = unsafe {
             mmap.atomic_load_u32_at(self.off.flags, Ordering::Relaxed)
@@ -775,14 +758,14 @@ impl SubmissionQueue {
     }
 
     // This method helped me catch a bug. I do not care if it is shallow.
-    fn read_tail(&self, mmap: &IoringMmap) -> u32 {
+    fn read_tail(&self, mmap: &mmap::Ioring) -> u32 {
         // SAFETY: The offset is provided by the kernel.
         unsafe { mmap.u32_at(self.off.tail) }
     }
 
     fn get_sqe(
         &mut self,
-        mmap: &IoringMmap,
+        mmap: &mmap::Ioring,
     ) -> Result<&mut io_uring_sqe, err::GetSqe> {
         let head = self.read_head(mmap);
         // Remember that these head and tail offsets wrap around every four
@@ -793,17 +776,13 @@ impl SubmissionQueue {
             return Err(err::GetSqe::SubmissionQueueFull);
         }
 
-        // SAFETY: The length is provided by the kernel
-        let sqes = unsafe {
-            self.mmap_entries.mut_slice_at::<io_uring_sqe>(0, self.entries)
-        };
-        let sqe = &mut sqes[(self.sqe_tail & self.mask) as usize];
+        let sqe = &mut self.mmap_entries[self.sqe_tail & self.mask];
         self.sqe_tail = next;
 
         Ok(&mut *sqe)
     }
 
-    fn flush(&mut self, mmap: &mut IoringMmap) -> u32 {
+    fn flush(&mut self, mmap: &mut mmap::Ioring) -> u32 {
         if self.sqe_head != self.sqe_tail {
             // Fill in SQEs that we have queued up, adding them to the
             // kernel ring.
@@ -832,7 +811,7 @@ impl SubmissionQueue {
         self.ready(mmap)
     }
 
-    fn ready(&mut self, mmap: &mut IoringMmap) -> u32 {
+    fn ready(&mut self, mmap: &mut mmap::Ioring) -> u32 {
         // Always use the shared ring state (i.e. not self.sqe_head) to
         // avoid going out of sync, see https://github.com/axboe/liburing/issues/92.
         self.sqe_tail.wrapping_sub(self.read_head(mmap))
@@ -852,7 +831,7 @@ impl CompletionQueue {
     ///
     /// The caller must ensure that the `params` and `mmap` are consistent
     /// and that the `mmap` is valid for the duration of the queue's life.
-    unsafe fn new(p: &io_uring_params, mmap: &IoringMmap) -> Self {
+    unsafe fn new(p: &io_uring_params, mmap: &mmap::Ioring) -> Self {
         Self {
             off: p.cq_off,
             mask: mmap.u32_at(p.cq_off.ring_mask),
@@ -860,21 +839,21 @@ impl CompletionQueue {
         }
     }
 
-    fn read_head(&self, mmap: &IoringMmap) -> u32 {
+    fn read_head(&self, mmap: &mmap::Ioring) -> u32 {
         // SAFETY: Offset provided by kernel.
         unsafe { mmap.u32_at(self.off.head) }
     }
 
-    fn read_tail(&self, mmap: &IoringMmap) -> u32 {
+    fn read_tail(&self, mmap: &mmap::Ioring) -> u32 {
         // SAFETY: Offset provided by kernel.
         unsafe { mmap.atomic_load_u32_at(self.off.tail, Ordering::Acquire) }
     }
 
-    fn ready(&mut self, mmap: &IoringMmap) -> u32 {
+    fn ready(&mut self, mmap: &mmap::Ioring) -> u32 {
         self.read_tail(mmap).wrapping_sub(self.read_head(mmap))
     }
 
-    fn advance(&mut self, mmap: &mut IoringMmap, count: u32) {
+    fn advance(&mut self, mmap: &mut mmap::Ioring, count: u32) {
         if count > 0 {
             // SAFETY: Offset provided by kernel.
             let atomic_head = unsafe { mmap.atomic_u32_at(self.off.head) };
@@ -884,7 +863,7 @@ impl CompletionQueue {
 
     fn copy_ready_events(
         &mut self,
-        mmap: &mut IoringMmap,
+        mmap: &mut mmap::Ioring,
         cqes: &mut [Cqe],
     ) -> u32 {
         let ready = self.ready(mmap);

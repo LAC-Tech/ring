@@ -235,6 +235,24 @@ impl Ioring {
         unsafe { self.slice_at::<Cqe>(self.cq_off.cqes, self.cq_entries) }
     }
 
+    pub fn cq_head(&self) -> u32 {
+        // SAFETY: Offset provided by kernel.
+        unsafe { self.u32_at(self.cq_off.head) }
+    }
+
+    pub fn cq_tail(&self) -> u32 {
+        // SAFETY: Offset provided by kernel.
+        unsafe { self.atomic_load_u32_at(self.cq_off.tail, Ordering::Acquire) }
+    }
+
+    pub fn cq_advance(&mut self, count: u32) {
+        if count > 0 {
+            // SAFETY: Offset provided by kernel.
+            let atomic_head = unsafe { self.atomic_u32_at(self.cq_off.head) };
+            atomic_head.fetch_add(count, Ordering::Release);
+        }
+    }
+
     /// # Safety
     ///
     /// The caller must ensure that the memory at `byte_offset` contains a valid

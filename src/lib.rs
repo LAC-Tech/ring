@@ -24,6 +24,7 @@
 //! ```
 
 mod mmap;
+pub use mmap::Cqe;
 pub use rustix;
 
 // These form part of the public API
@@ -343,7 +344,7 @@ impl IoUring {
     /// These are CQEs that the application is yet to consume.
     /// Matches the implementation of `io_uring_cq_ready` in liburing.
     pub fn cq_ready(&mut self) -> u32 {
-        self.cq.ready(&self.mmap)
+        self.mmap.cq_tail().wrapping_sub(self.mmap.cq_head())
     }
 
     /// Copies as many CQEs as are ready, and that can fit into the destination
@@ -391,13 +392,37 @@ impl IoUring {
         loop {
             let count = self.copy_cqes(&mut cqes, 1)?;
             if count > 0 {
-                // Rustix's io_uring_cqe is not copyable because of
-                // `big_cqe: IncompleteArrayField<u64>`
-                // TODO: I hate this whole implementation. Come up with
-                // something better
                 return Ok(cqes[0]);
             }
         }
+    }
+
+    fn copy_cqes_ready(&mut self, cqes: &mut [Cqe]) -> u32 {
+        let ready = self.cq_ready();
+        let count = cmp::min(cqes.len(), ready as usize);
+        let head = self.mmap.cq_head() & self.mask;
+
+        // before wrapping
+        let n = cmp::min((self.entries - head) as usize, count);
+
+        let ring_cqes = self.mmap.cqes();
+
+        {
+            let head = head as usize;
+            cqes[..n].clone_from_slice(&ring_cqes[head..head + n]);
+        }
+
+        if count as usize > n {
+            // wrap self.cq.cqes
+            let w = count as usize - n;
+            cqes[n..n + w].clone_from_slice(&ring_cqes[0..w]);
+        }
+
+        let count: u32 = count
+            .try_into()
+            .expect("io_uring expects all counts and offsets to fit into u32");
+        self.cq_advance(count);
+        count
     }
 
     /// Matches the implementation of `cq_ring_needs_flush()` in liburing.
@@ -414,13 +439,13 @@ impl IoUring {
     /// liburing.
     // TODO: const pointer param? not using it? review this..
     pub fn cqe_seen(&mut self, _cqe: *const Cqe) {
-        self.cq.advance(&mut self.mmap, 1);
+        self.mmap.cq_advance(1);
     }
 
     /// For advanced use cases only that implement custom completion queue
     /// methods. Matches the implementation of `cq_advance()` in liburing.
     pub fn cq_advance(&mut self, count: u32) {
-        self.cq.advance(&mut self.mmap, count);
+        self.mmap.cq_advance(count);
     }
 
     /// Registers an array of buffers for use with [`SqeExt::prep_readv_fixed`]
@@ -746,62 +771,6 @@ impl CompletionQueue {
             mask: mmap.u32_at(p.cq_off.ring_mask),
             entries: p.cq_entries,
         }
-    }
-
-    fn read_head(&self, mmap: &mmap::Ioring) -> u32 {
-        // SAFETY: Offset provided by kernel.
-        unsafe { mmap.u32_at(self.off.head) }
-    }
-
-    fn read_tail(&self, mmap: &mmap::Ioring) -> u32 {
-        // SAFETY: Offset provided by kernel.
-        unsafe { mmap.atomic_load_u32_at(self.off.tail, Ordering::Acquire) }
-    }
-
-    fn ready(&mut self, mmap: &mmap::Ioring) -> u32 {
-        self.read_tail(mmap).wrapping_sub(self.read_head(mmap))
-    }
-
-    fn advance(&mut self, mmap: &mut mmap::Ioring, count: u32) {
-        if count > 0 {
-            // SAFETY: Offset provided by kernel.
-            let atomic_head = unsafe { mmap.atomic_u32_at(self.off.head) };
-            atomic_head.fetch_add(count, Ordering::Release);
-        }
-    }
-
-    fn copy_ready_events(
-        &mut self,
-        mmap: &mut mmap::Ioring,
-        cqes: &mut [Cqe],
-    ) -> u32 {
-        let ready = self.ready(mmap);
-        let count = cmp::min(cqes.len(), ready as usize);
-        let head = self.read_head(mmap) & self.mask;
-
-        // before wrapping
-        let n = cmp::min((self.entries - head) as usize, count);
-
-        // SAFETY: Offset and entries provided by kernel.
-        let ring_cqes =
-            unsafe { mmap.slice_at::<Cqe>(self.off.cqes, self.entries) };
-
-        {
-            let head = head as usize;
-            cqes[..n].clone_from_slice(&ring_cqes[head..head + n]);
-        }
-
-        if count as usize > n {
-            // wrap self.cq.cqes
-            let w = count as usize - n;
-            cqes[n..n + w].clone_from_slice(&ring_cqes[0..w]);
-        }
-
-        let count: u32 = count
-            .try_into()
-            .expect("io_uring expects all counts and offsets to fit into u32");
-        self.advance(mmap, count);
-        count
     }
 }
 

@@ -101,10 +101,19 @@ impl IoUring {
         let res = unsafe { io_uring_setup(entries, p) };
         let fd = res.map_err(|errno| match errno {
             Errno::FAULT => ParamsOutsideAccessibleAddressSpace,
+            // The resv array contains non-zero data, p.flags contains an
+            // unsupported flag, entries out of bounds,
+            // `IORING_SETUP_SQ_AFF` was specified without
+            // `IORING_SETUP_SQPOLL`, or `IORING_SETUP_CQSIZE` was
+            // specified but `io_uring_params.cq_entries` was
+            // invalid:
             Errno::INVAL => ArgumentsInvalid,
             Errno::MFILE => ProcessFdQuotaExceeded,
             Errno::NFILE => SystemFdQuotaExceeded,
             Errno::NOMEM => SystemResources,
+            // `IORING_SETUP_SQPOLL` was specified but effective user ID lacks
+            // sufficient privileges, or a container seccomp policy
+            // prohibits `io_uring` syscalls:
             Errno::PERM => PermissionDenied,
             Errno::NOSYS => SystemOutdated,
             _ => UnexpectedErrno(errno),
@@ -126,7 +135,7 @@ impl IoUring {
         }
 
         if p.flags.contains(IoringSetupFlags::CQE32) {
-            return Err(UnsupportedFlag("CQE32"));
+            return Err(CQE32Unsupported);
         }
 
         // Check that the kernel has actually set params and that "impossible is
@@ -720,21 +729,13 @@ mod err {
         EntriesZero,
         EntriesNotPowerOfTwo,
         ParamsOutsideAccessibleAddressSpace,
-        /// The resv array contains non-zero data, p.flags contains an
-        /// unsupported flag, entries out of bounds,
-        /// `IORING_SETUP_SQ_AFF` was specified without `IORING_SETUP_SQPOLL`,
-        /// or `IORING_SETUP_CQSIZE` was specified but
-        /// `io_uring_params.cq_entries` was invalid:
         ArgumentsInvalid,
         ProcessFdQuotaExceeded,
         SystemFdQuotaExceeded,
         SystemResources,
-        /// `IORING_SETUP_SQPOLL` was specified but effective user ID lacks
-        /// sufficient privileges, or a container seccomp policy
-        /// prohibits `io_uring` syscalls:
         PermissionDenied,
         SystemOutdated,
-        UnsupportedFlag(&'static str),
+        CQE32Unsupported,
         UnexpectedErrno(Errno),
     }
 
@@ -846,7 +847,7 @@ mod test_ioring_op_uring_cmd {
         let ring = IoUring::new_with_params(2, &mut params);
 
         assert!(
-            matches!(ring, Err(Init::UnsupportedFlag("CQE32"))),
+            matches!(ring, Err(Init::CQE32Unsupported)),
             "attempt to construct ring with CQE32 flag not caught"
         );
     }

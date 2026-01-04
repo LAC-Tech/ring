@@ -17,7 +17,7 @@
 //! ```no_run
 #![doc = include_str!("../examples/readme.rs")]
 //! ```
-//!
+//! 
 //! Or, in `no_std`:
 //! ```no_run
 #![doc = include_str!("../examples/readme_no_std.rs")]
@@ -238,7 +238,7 @@ impl IoUring {
     ///
     /// # Errors
     ///
-    /// Returns an [`io::Result`] with the following possible errno variants:
+    /// An [`io::Result`] can be:
     /// - [`Errno::AGAIN`] The kernel was unable to allocate memory or ran out
     ///   of resources for the request. The application should wait for some
     ///   completions and try again.

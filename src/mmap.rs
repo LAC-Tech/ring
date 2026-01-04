@@ -86,7 +86,7 @@ impl Mmap {
     /// mutation as type `T` and follows Rust's aliasing rules.
     unsafe fn mut_ptr_at<T>(&mut self, byte_offset: u32) -> *mut T {
         self.check_bounds(byte_offset, size_of::<T>());
-        self.ptr.cast::<u8>().add(byte_offset as usize) as *mut T
+        self.ptr.cast::<u8>().add(byte_offset as usize).cast::<T>()
     }
 
     /// # Safety
@@ -95,7 +95,7 @@ impl Mmap {
     /// representation of type `T`.
     unsafe fn ptr_at<T>(&self, byte_offset: u32) -> *const T {
         self.check_bounds(byte_offset, size_of::<T>());
-        (self.ptr as *const u8).add(byte_offset as usize) as *const T
+        (self.ptr as *const u8).add(byte_offset as usize).cast::<T>()
     }
 
     /// # Safety

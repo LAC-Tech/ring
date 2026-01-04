@@ -17,7 +17,7 @@
 //! ```no_run
 #![doc = include_str!("../examples/readme.rs")]
 //! ```
-//! 
+//!
 //! Or, in `no_std`:
 //! ```no_run
 #![doc = include_str!("../examples/readme_no_std.rs")]
@@ -78,14 +78,19 @@ impl IoUring {
     /// # Errors
     ///
     /// An [`err::Init::Os`] can be:
-    ///  - [`Errno::INVAL`] The resv array contains non-zero data, p.flags
-    ///    contains an unsupported flag, entries out of bounds,
-    ///    [`IoringSetupFlags::SQ_AFF`] was specified without
-    ///    [`IoringSetupFlags::SQPOLL`], or [`IoringSetupFlags::CQSIZE`] was
-    ///    specified but linux.io_uring_params.cq_entries was invalid.
+    /// - [`Errno::FAULT`] Parameters are outside accessible address space.
+    /// - [`Errno::INVAL`] The resv array contains non-zero data, p.flags
+    ///   contains an unsupported flag, entries out of bounds,
+    ///   [`IoringSetupFlags::SQ_AFF`] was specified without
+    ///   [`IoringSetupFlags::SQPOLL`], or [`IoringSetupFlags::CQSIZE`] was
+    ///   specified but linux.io_uring_params.cq_entries was invalid.
+    /// - [`Errno::MFILE`] Process file descriptor quota exceeded.
+    /// - [`Errno::NFILE`] System file descriptor quota exceeded.
+    /// - [`Errno::NOMEM`] System resources.
     /// - [`Errno::PERM`] [`IoringSetupFlags::SQPOLL`] was specified but
     ///   effective user ID lacks sufficient privileges, or a container seccomp
     ///   policy prohibits io_uring syscalls.
+    /// - [`Errno::NOSYS`] System is outdated (kernel < 5.4).
     pub fn new_with_params(
         entries: u32,
         p: &mut io_uring_params,
@@ -232,6 +237,31 @@ impl IoUring {
     /// requested operations.
     ///
     /// # Errors
+    ///
+    /// Returns an [`io::Result`] with the following possible errno variants:
+    /// - [`Errno::AGAIN`] The kernel was unable to allocate memory or ran out
+    ///   of resources for the request. The application should wait for some
+    ///   completions and try again.
+    /// - [`Errno::BADF`] The SQE `fd` is invalid, or `IOSQE_FIXED_FILE` was set
+    ///   but no files were registered.
+    /// - [`Errno::BADFD`] The file descriptor is valid, but the ring is not in
+    ///   the right state. See io_uring_register(2) for how to enable the ring.
+    /// - [`Errno::BUSY`] The application attempted to overcommit the number of
+    ///   requests it can have pending. The application should wait for some
+    ///   completions and try again.
+    /// - [`Errno::INVAL`] The SQE is invalid, or valid but the ring was setup
+    ///   with `IORING_SETUP_IOPOLL`.
+    /// - [`Errno::FAULT`] The buffer is outside the process' accessible address
+    ///   space, or `IORING_OP_READ_FIXED` or `IORING_OP_WRITE_FIXED` was
+    ///   specified but no buffers were registered, or the range described by
+    ///   `addr` and `len` is not within the buffer registered at `buf_index`.
+    /// - [`Errno::NXIO`] Ring is shutting down.
+    /// - [`Errno::OPNOTSUPP`] The kernel believes our `self.fd` does not refer
+    ///   to an io_uring instance, or the opcode is valid but not supported by
+    ///   this kernel (more likely).
+    /// - [`Errno::INTR`] The operation was interrupted by a delivery of a
+    ///   signal before it could complete. This can happen while waiting for
+    ///   events with `IORING_ENTER_GETEVENTS`.
     pub unsafe fn enter(
         &mut self,
         to_submit: u32,

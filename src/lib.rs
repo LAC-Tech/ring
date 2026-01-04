@@ -94,25 +94,10 @@ impl IoUring {
         assert!(p.wq_fd == 0 || p.flags.contains(IoringSetupFlags::ATTACH_WQ));
         assert_eq!(p.resv, [0, 0, 0]);
 
-        use io::Errno;
-
         // SAFETY: `entries` and `p4 have been validated.
         // The kernel will initialize the fields of `p`.
         let res = unsafe { io_uring_setup(entries, p) };
-        let fd = res.map_err(|errno| match errno {
-            // The resv array contains non-zero data, p.flags contains an
-            // unsupported flag, entries out of bounds,
-            // `IORING_SETUP_SQ_AFF` was specified without
-            // `IORING_SETUP_SQPOLL`, or `IORING_SETUP_CQSIZE` was
-            // specified but `io_uring_params.cq_entries` was
-            // invalid:
-            Errno::INVAL => Os(errno),
-            // `IORING_SETUP_SQPOLL` was specified but effective user ID lacks
-            // sufficient privileges, or a container seccomp policy
-            // prohibits `io_uring` syscalls:
-            Errno::PERM => Os(errno),
-            _ => Os(errno),
-        })?;
+        let fd = res.map_err(Os)?;
 
         // Kernel versions 5.4 and up use only one mmap() for the submission and
         // completion queues. This is not an optional feature for us...
@@ -200,7 +185,7 @@ impl IoUring {
     /// # Safety
     ///
     /// See [`Self::enter`].
-    pub unsafe fn submit(&mut self) -> Result<u32, err::Enter> {
+    pub unsafe fn submit(&mut self) -> io::Result<u32> {
         self.submit_and_wait(0)
     }
 
@@ -211,10 +196,7 @@ impl IoUring {
     /// # Safety
     ///
     /// See [`Self::enter`].
-    pub unsafe fn submit_and_wait(
-        &mut self,
-        wait_nr: u32,
-    ) -> Result<u32, err::Enter> {
+    pub unsafe fn submit_and_wait(&mut self, wait_nr: u32) -> io::Result<u32> {
         let submitted = self.flush_sq();
         let mut flags = IoringEnterFlags::empty();
 
@@ -241,24 +223,8 @@ impl IoUring {
         to_submit: u32,
         min_complete: u32,
         flags: IoringEnterFlags,
-    ) -> Result<u32, err::Enter> {
-        use err::Enter::*;
-        use rustix::io::Errno;
-
-        io_uring_enter(self.fd.as_fd(), to_submit, min_complete, flags).map_err(
-            |err| match err {
-                Errno::AGAIN => SystemResources,
-                Errno::BADF => FileDescriptorInvalid,
-                Errno::BADFD => FileDescriptorInBadState,
-                Errno::BUSY => CompletionQueueOvercommitted,
-                Errno::INVAL => SubmissionQueueEntryInvalid,
-                Errno::FAULT => BufferInvalid,
-                Errno::NXIO => RingShuttingDown,
-                Errno::OPNOTSUPP => OpcodeNotSupported,
-                Errno::INTR => SignalInterrupt,
-                errno => UnexpectedErrno(errno),
-            },
-        )
+    ) -> io::Result<u32> {
+        io_uring_enter(self.fd.as_fd(), to_submit, min_complete, flags)
     }
 
     /// Sync internal state with kernel ring state on the SQ side.
@@ -347,7 +313,7 @@ impl IoUring {
         &mut self,
         cqes: &mut [Cqe],
         wait_nr: u32,
-    ) -> Result<u32, err::Enter> {
+    ) -> io::Result<u32> {
         let count = self.copy_cqes_ready(cqes);
         if count > 0 {
             return Ok(count);
@@ -367,7 +333,7 @@ impl IoUring {
     /// # Safety
     ///
     /// May call [`Self::enter`].
-    pub unsafe fn copy_cqe(&mut self) -> Result<Cqe, err::Enter> {
+    pub unsafe fn copy_cqe(&mut self) -> io::Result<Cqe> {
         let mut cqes = [Cqe::default(); 1];
         loop {
             let count = self.copy_cqes(&mut cqes, 1)?;
@@ -439,18 +405,13 @@ impl IoUring {
     /// # Panics
     ///
     /// If the length of the `fds` cannot fit in a `u32`.
-    pub unsafe fn register_files(
-        &self,
-        fds: &[BorrowedFd],
-    ) -> Result<(), err::Register> {
+    pub unsafe fn register_files(&self, fds: &[BorrowedFd]) -> io::Result<u32> {
         io_uring_register(
             self.fd(),
             IoringRegisterOp::RegisterFiles,
             fds.as_ptr().cast::<c_void>(),
             fds.len().try_into().expect("length of fds must fit in a u32"),
-        )?;
-
-        Ok(())
+        )
     }
 
     /// Unregisters all registered file descriptors previously associated with
@@ -460,21 +421,13 @@ impl IoUring {
     ///
     /// The caller must ensure that no pending SQEs reference the registered
     /// indices.
-    pub unsafe fn unregister_files(&mut self) -> Result<(), err::Unregister> {
-        use err::Unregister;
-        use rustix::io::Errno;
-        let res = io_uring_register(
+    pub unsafe fn unregister_files(&mut self) -> io::Result<u32> {
+        io_uring_register(
             self.fd(),
             IoringRegisterOp::UnregisterFiles,
             null(),
             0,
-        );
-
-        match res {
-            Ok(_) => Ok(()),
-            Err(Errno::NXIO) => Err(Unregister::FilesNotRegistered),
-            Err(errno) => Err(Unregister::UnexpectedErrno(errno)),
-        }
+        )
     }
 }
 
@@ -719,7 +672,6 @@ struct CompletionQueue {
 
 mod err {
     use crate::rustix::io::Errno;
-    use core::fmt;
     #[derive(Debug, Eq, PartialEq)]
     pub enum Init {
         EntriesZero,
@@ -730,95 +682,8 @@ mod err {
     }
 
     #[derive(Debug, Eq, PartialEq)]
-    pub enum Enter {
-        /// The kernel was unable to allocate memory or ran out of resources
-        /// for the request. The application should waitufor some
-        /// completions and try again:
-        SystemResources,
-        /// The SQE `fd` is invalid, or `IOSQE_FIXED_FILE` was set but no files
-        /// were registered:
-        FileDescriptorInvalid,
-        /// The file descriptor is valid, but the ring is not in the right
-        /// state. See `io_uring_register(2)` for how to enable the ring.
-        FileDescriptorInBadState,
-        /// The application attempted to overcommit the number of requests it
-        /// can have pending. The application should wait for some
-        /// completions and try again:
-        CompletionQueueOvercommitted,
-        /// The SQE is invalid, or valid but the ring was setup with
-        /// `IORING_SETUP_IOPOLL`
-        SubmissionQueueEntryInvalid,
-        /// The buffer is outside the process' accessible address space, or
-        /// `IORING_OP_READ_FIXED` or `IORING_OP_WRITE_FIXED` was specified
-        /// but no buffers were registered, or the range described by
-        /// `addr` and `len` is not within the buffer registered at
-        /// `buf_index`:
-        BufferInvalid,
-        RingShuttingDown,
-        /// The kernel believes our `self.fd` does not refer to an `io_uring`
-        /// instance, or the opcode is valid but not supported by this
-        /// kernel (more likely):
-        OpcodeNotSupported,
-        /// The operation was interrupted by a delivery of a signal before it
-        /// could complete. This can happen while waiting for events
-        /// with `IORING_ENTER_GETEVENTS`:
-        SignalInterrupt,
-        UnexpectedErrno(Errno),
-    }
-
-    #[derive(Debug, Eq, PartialEq)]
     pub enum GetSqe {
         SubmissionQueueFull,
-    }
-
-    #[derive(Debug)]
-    pub enum Register {
-        /// One or more fds in the array are invalid, or the kernel does not
-        /// support sparse sets:
-        FileDescriptorInvalid,
-        FilesAlreadyRegistered,
-        FilesEmpty,
-        /// Adding `nr_args` file references would exceed the maximum allowed
-        /// number of files the user is allowed to have according to
-        /// the per-user `RLIMIT_NOFILE` resource limit and
-        /// the `CAP_SYS_RESOURCE` capability is not set, or `nr_args` exceeds
-        /// the maximum allowed for a fixed file set (older kernels
-        /// have a limit of 1024 files vs 64K files):
-        UserFdQuotaExceeded,
-        /// Insufficient kernel resources, or the caller had a non-zero
-        /// `RLIMIT_MEMLOCK` soft resource limit but tried to lock more
-        /// memory than the limit permitted (not enforced
-        /// when the process is privileged with `CAP_IPC_LOCK`):
-        SystemResources,
-        // Attempt to register files on a ring already registering files or
-        // being torn down:
-        RingShuttingDownOrAlreadyRegisteringFiles,
-        UnexpectedErrno(rustix::io::Errno),
-    }
-
-    impl From<rustix::io::Errno> for Register {
-        fn from(errno: Errno) -> Self {
-            match errno {
-                Errno::BADF => Self::FileDescriptorInvalid,
-                Errno::INVAL => Self::FilesEmpty,
-                Errno::MFILE => Self::UserFdQuotaExceeded,
-                Errno::NOMEM => Self::SystemResources,
-                Errno::NXIO => Self::RingShuttingDownOrAlreadyRegisteringFiles,
-                _ => Self::UnexpectedErrno(errno),
-            }
-        }
-    }
-
-    #[derive(Debug)]
-    pub enum Unregister {
-        FilesNotRegistered,
-        UnexpectedErrno(Errno),
-    }
-
-    #[derive(Debug)]
-    pub enum RegisterBufRing {
-        ArgumentsInvalid,
-        UnexpectedErrno(Errno),
     }
 }
 
@@ -1009,9 +874,8 @@ mod zig_tests {
         // We therefore avoid stressing sparse fd sets here:
         let registered_fds = [fd.as_fd(); 1];
         let fd_index = 0;
-        unsafe {
-            ring.register_files(&registered_fds).unwrap();
-        }
+        let registered_count =
+            unsafe { ring.register_files(&registered_fds).unwrap() };
 
         let mut buffer = [42u8; 128];
         let iovecs = [IoSliceMut::new(&mut buffer)];
@@ -1032,7 +896,8 @@ mod zig_tests {
         assert_eq!(cqe.flags, IoringCqeFlags::empty());
         assert!(&buffer.iter().all(|&n| n == 0));
 
-        unsafe { ring.unregister_files().unwrap() }
+        let unregistered_count = unsafe { ring.unregister_files().unwrap() };
+        assert_eq!(registered_count, unregistered_count);
         assert_ring_clean(&mut ring);
     }
 

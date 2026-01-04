@@ -36,23 +36,20 @@ pub use rustix::io_uring::{
 
 use core::ffi::c_void;
 use core::ptr::null;
-use core::sync::atomic::Ordering;
-use core::{assert, assert_eq, assert_ne, cmp, mem};
+use core::{assert, assert_eq, assert_ne, cmp};
 use rustix::fd::{AsFd, AsRawFd, OwnedFd};
 use rustix::io;
 use rustix::io_uring::{
     io_cqring_offsets, io_sqring_offsets, io_uring_enter, io_uring_ptr,
-    io_uring_register, io_uring_setup, io_uring_user_data, IoringCqeFlags,
-    IoringFeatureFlags, IoringRegisterOp, IoringSetupFlags, IoringSqFlags,
-    IoringSqeFlags, IORING_OFF_CQ_RING, IORING_OFF_SQES, IORING_OFF_SQ_RING,
+    io_uring_register, io_uring_setup, IoringFeatureFlags, IoringRegisterOp,
+    IoringSetupFlags, IoringSqFlags, IoringSqeFlags,
 };
 
 /// The main entry point to the library.
 #[derive(Debug)]
 pub struct IoUring {
     fd: OwnedFd,
-    // A single mmap call that contains both the sq and cq
-    mmap: mmap::Ioring,
+    shared: mmap::Ioring,
     flags: IoringSetupFlags,
     features: IoringFeatureFlags,
     sq: SubmissionQueue,
@@ -138,41 +135,14 @@ impl IoUring {
         assert_ne!(p.cq_entries, 0);
         assert!(p.cq_entries >= p.sq_entries);
 
-        let mmap =
+        let (shared, ring_masks) =
             mmap::Ioring::new(fd.as_fd(), &p).map_err(UnexpectedErrno)?;
 
-        // SAFETY: We trust the kernel to provide valid offsets within the
-        // memory it just mapped for us.
-        let sq_mask = unsafe { mmap.u32_at(p.sq_off.ring_mask) };
-        let sq = SubmissionQueue::new(p, fd.as_fd(), sq_mask)
+        let sq = SubmissionQueue::new(p, fd.as_fd(), ring_masks.sq)
             .map_err(UnexpectedErrno)?;
-        // SAFETY: CompletionQueue::new is internal and we pass it a valid
-        // mmap and parameters provided by the kernel.
-        let cq = unsafe { CompletionQueue::new(p, &mmap) };
+        let cq = CompletionQueue::new(p, ring_masks.cq);
 
-        // Check that our starting state is as we expect.
-        assert_eq!(sq.read_head(&mmap), 0);
-        assert_eq!(sq.read_tail(&mmap), 0);
-        assert_eq!(sq.mask, p.sq_entries - 1);
-        // Allow flags.* to be non-zero, since the kernel may set
-        // IORING_SQ_NEED_WAKEUP at any time.
-        // SAFETY: Offsets are provided by the kernel.
-        assert_eq!(unsafe { mmap.u32_at(p.sq_off.dropped) }, 0);
-        assert_eq!(sq.sqe_head, 0);
-        assert_eq!(sq.sqe_tail, 0);
-
-        assert_eq!({ cq.read_head(&mmap) }, 0);
-        assert_eq!({ cq.read_tail(&mmap) }, 0);
-        assert_eq!(cq.mask, p.cq_entries - 1);
-        // SAFETY: Offsets are provided by the kernel.
-        assert_eq!(unsafe { mmap.u32_at(p.cq_off.overflow) }, 0);
-
-        // We expect the kernel copies p.sq_entries to the u32 pointed to by
-        // p.sq_off.ring_entries, see https://github.com/torvalds/linux/blob/v5.8/fs/io_uring.c#L7843-L7844.
-        // SAFETY: Offsets are provided by the kernel.
-        assert_eq!(unsafe { mmap.u32_at(p.sq_off.ring_entries) }, p.sq_entries);
-
-        Ok(Self { fd, mmap, flags: p.flags, features: p.features, sq, cq })
+        Ok(Self { fd, shared, flags: p.flags, features: p.features, sq, cq })
     }
 
     pub fn fd(&self) -> BorrowedFd<'_> {
@@ -192,7 +162,7 @@ impl IoUring {
     /// queue is full. We follow the implementation (and atomics) of
     /// liburing's `io_uring_get_sqe()` exactly.
     pub fn get_sqe_raw(&mut self) -> Result<&mut io_uring_sqe, err::GetSqe> {
-        let head = self.mmap.sq_head();
+        let head = self.shared.sq_head();
         // Remember that these head and tail offsets wrap around every four
         // billion operations. We must therefore use wrapping addition
         // and subtraction to avoid a runtime crash.
@@ -291,9 +261,9 @@ impl IoUring {
             // Fill in SQEs that we have queued up, adding them to the
             // kernel ring.
             let to_submit = self.sq.sqe_tail.wrapping_sub(self.sq.sqe_head);
-            let mut new_tail = self.mmap.sq_tail();
+            let mut new_tail = self.shared.sq_tail();
 
-            let array = self.mmap.sqe_indices();
+            let array = self.shared.sqe_indices();
 
             for _ in 0..to_submit {
                 array[(new_tail & self.sq.mask) as usize] =
@@ -304,7 +274,7 @@ impl IoUring {
 
             // Ensure that the kernel can actually see the SQE updates when
             // it sees the tail update.
-            self.mmap.sq_tail_write(new_tail);
+            self.shared.sq_tail_write(new_tail);
         }
 
         self.sq_ready()
@@ -324,7 +294,7 @@ impl IoUring {
             return true;
         }
 
-        if self.mmap.sq_flag_contains(IoringSqFlags::NEED_WAKEUP) {
+        if self.shared.sq_flag_contains(IoringSqFlags::NEED_WAKEUP) {
             flags.set(IoringEnterFlags::SQ_WAKEUP, true);
             return true;
         }
@@ -337,14 +307,14 @@ impl IoUring {
     /// yet to consume. Matches the implementation of `io_uring_sq_ready` in
     /// liburing.
     pub fn sq_ready(&mut self) -> u32 {
-        self.sq.sqe_tail.wrapping_sub(self.mmap.sq_head())
+        self.sq.sqe_tail.wrapping_sub(self.shared.sq_head())
     }
 
     /// Returns the number of CQEs in the completion queue, i.e. its length.
     /// These are CQEs that the application is yet to consume.
     /// Matches the implementation of `io_uring_cq_ready` in liburing.
     pub fn cq_ready(&mut self) -> u32 {
-        self.mmap.cq_tail().wrapping_sub(self.mmap.cq_head())
+        self.shared.cq_tail().wrapping_sub(self.shared.cq_head())
     }
 
     /// Copies as many CQEs as are ready, and that can fit into the destination
@@ -368,13 +338,13 @@ impl IoUring {
         cqes: &mut [Cqe],
         wait_nr: u32,
     ) -> Result<u32, err::Enter> {
-        let count = self.cq.copy_ready_events(&mut self.mmap, cqes);
+        let count = self.copy_cqes_ready(cqes);
         if count > 0 {
             return Ok(count);
         }
         if self.cq_ring_needs_flush() || wait_nr > 0 {
             self.enter(0, wait_nr, IoringEnterFlags::GETEVENTS)?;
-            return Ok(self.cq.copy_ready_events(&mut self.mmap, cqes));
+            return Ok(self.copy_cqes_ready(cqes));
         }
 
         Ok(0)
@@ -400,12 +370,12 @@ impl IoUring {
     fn copy_cqes_ready(&mut self, cqes: &mut [Cqe]) -> u32 {
         let ready = self.cq_ready();
         let count = cmp::min(cqes.len(), ready as usize);
-        let head = self.mmap.cq_head() & self.mask;
+        let head = self.shared.cq_head() & self.mask;
 
         // before wrapping
         let n = cmp::min((self.entries - head) as usize, count);
 
-        let ring_cqes = self.mmap.cqes();
+        let ring_cqes = self.shared.cqes();
 
         {
             let head = head as usize;
@@ -427,7 +397,7 @@ impl IoUring {
 
     /// Matches the implementation of `cq_ring_needs_flush()` in liburing.
     pub fn cq_ring_needs_flush(&mut self) -> bool {
-        self.mmap.sq_flag_contains(IoringSqFlags::CQ_OVERFLOW)
+        self.shared.sq_flag_contains(IoringSqFlags::CQ_OVERFLOW)
     }
 
     /// For advanced use cases only that implement custom completion queue
@@ -439,13 +409,13 @@ impl IoUring {
     /// liburing.
     // TODO: const pointer param? not using it? review this..
     pub fn cqe_seen(&mut self, _cqe: *const Cqe) {
-        self.mmap.cq_advance(1);
+        self.shared.cq_advance(1);
     }
 
     /// For advanced use cases only that implement custom completion queue
     /// methods. Matches the implementation of `cq_advance()` in liburing.
     pub fn cq_advance(&mut self, count: u32) {
-        self.mmap.cq_advance(count);
+        self.shared.cq_advance(count);
     }
 
     /// Registers an array of buffers for use with [`SqeExt::prep_readv_fixed`]
@@ -722,7 +692,6 @@ struct SubmissionQueue {
     off: io_sqring_offsets,
     entries: u32,
     mask: u32,
-
     // We use `sqe_head` and `sqe_tail` in the same way as liburing:
     // We increment `sqe_tail` (but not `tail`) for each call to
     // `get_sqe()`. We then set `tail` to `sqe_tail` once, only
@@ -761,16 +730,8 @@ struct CompletionQueue {
 }
 
 impl CompletionQueue {
-    /// # Safety
-    ///
-    /// The caller must ensure that the `params` and `mmap` are consistent
-    /// and that the `mmap` is valid for the duration of the queue's life.
-    unsafe fn new(p: &io_uring_params, mmap: &mmap::Ioring) -> Self {
-        Self {
-            off: p.cq_off,
-            mask: mmap.u32_at(p.cq_off.ring_mask),
-            entries: p.cq_entries,
-        }
+    fn new(p: &io_uring_params, mask: u32) -> Self {
+        Self { off: p.cq_off, mask, entries: p.cq_entries }
     }
 }
 
@@ -1027,23 +988,23 @@ mod zig_tests {
 
         assert_eq!(ring.sq.sqe_head, 0);
         assert_eq!(ring.sq.sqe_tail, 1);
-        assert_eq!(ring.mmap.sq_tail(), 0);
-        assert_eq!(ring.cq.read_head(&mut ring.mmap), 0);
+        assert_eq!(ring.shared.sq_tail(), 0);
+        assert_eq!(ring.shared.cq_head(), 0);
         assert_eq!(ring.sq_ready(), 1);
         assert_eq!(ring.cq_ready(), 0);
 
         assert_eq!(unsafe { ring.submit() }, Ok(1));
         assert_eq!(ring.sq.sqe_head, 1);
         assert_eq!(ring.sq.sqe_tail, 1);
-        assert_eq!(ring.mmap.sq_tail(), 1);
-        assert_eq!(ring.cq.read_head(&mut ring.mmap), 0);
+        assert_eq!(ring.shared.sq_tail(), 1);
+        assert_eq!(ring.shared.cq_head(), 0);
         assert_eq!(ring.sq_ready(), 0);
 
         let cqe = unsafe { ring.copy_cqe().unwrap() };
         assert_eq!(cqe.user_data.u64_(), 0xaaaaaaaa);
         assert_eq!(cqe.res, 0);
         assert_eq!(cqe.flags, IoringCqeFlags::empty());
-        assert_eq!(ring.cq.read_head(&mut ring.mmap), 1);
+        assert_eq!(ring.shared.cq_head(), 1);
         assert_eq!(ring.cq_ready(), 0);
 
         let mut sqe_barrier = ring.get_sqe().unwrap();
@@ -1056,8 +1017,8 @@ mod zig_tests {
         assert_eq!(cqe.flags, IoringCqeFlags::empty());
         assert_eq!(ring.sq.sqe_head, 2);
         assert_eq!(ring.sq.sqe_tail, 2);
-        assert_eq!(ring.mmap.sq_tail(), 2);
-        assert_eq!(ring.cq.read_head(&mut ring.mmap), 2);
+        assert_eq!(ring.shared.sq_tail(), 2);
+        assert_eq!(ring.shared.cq_head(), 2);
 
         assert_ring_clean(&mut ring);
     }

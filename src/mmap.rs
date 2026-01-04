@@ -100,6 +100,14 @@ impl Mmap {
         self.check_bounds(byte_offset, mem::size_of::<T>());
         (self.ptr as *const u8).add(byte_offset as usize) as *const T
     }
+
+    /// # Safety
+    ///
+    /// The caller must ensure that the memory at `byte_offset` contains a valid
+    /// u32.
+    unsafe fn u32_at(&self, byte_offset: u32) -> u32 {
+        *self.ptr_at(byte_offset)
+    }
 }
 
 impl Drop for Mmap {
@@ -152,6 +160,15 @@ impl IndexMut<u32> for Sqes {
 }
 
 #[derive(Debug)]
+pub struct RingMasks {
+    pub sq: u32,
+    pub cq: u32,
+}
+
+/// Memory shared between the user and the kernel.
+/// Designed to be the once place that handles all the potentially unsafe offset
+/// and synchronisation issues.
+#[derive(Debug)]
 pub struct Ioring {
     mmap: Mmap,
     sq_off: io_sqring_offsets,
@@ -161,23 +178,12 @@ pub struct Ioring {
 }
 
 impl Ioring {
+    // This returns RingMasks as well because they should only ever be read once
     pub fn new(
         ring_fd: BorrowedFd,
         p: &io_uring_params,
-    ) -> rustix::io::Result<Self> {
-        let io_uring_params {
-            sq_entries,
-            cq_entries,
-            flags,
-            sq_thread_cpu,
-            sq_thread_idle,
-            features,
-            wq_fd,
-            resv,
-            sq_off,
-            cq_off,
-            ..
-        } = *p;
+    ) -> rustix::io::Result<(Self, RingMasks)> {
+        let io_uring_params { sq_entries, cq_entries, sq_off, cq_off, .. } = *p;
 
         let size = cmp::max(
             sq_off.array + sq_entries * U32_SIZE,
@@ -190,7 +196,36 @@ impl Ioring {
             IORING_OFF_SQ_RING,
         )?;
 
-        Ok(Self { mmap, sq_off, cq_off, sq_entries, cq_entries })
+        let masks = unsafe {
+            RingMasks {
+                sq: mmap.u32_at(sq_off.ring_mask),
+                cq: mmap.u32_at(cq_off.ring_mask),
+            }
+        };
+
+        // Check that our starting state is as we expect.
+        // SAFETY: Offsets are provided by the kernel.
+        unsafe {
+            assert_eq!(mmap.u32_at(sq_off.head), 0);
+            assert_eq!(mmap.u32_at(sq_off.tail), 0);
+            assert_eq!(masks.sq, sq_entries - 1);
+            // Allow flags.* to be non-zero, since the kernel may set
+            // IORING_SQ_NEED_WAKEUP at any time.
+            assert_eq!(mmap.u32_at(p.sq_off.dropped), 0);
+
+            assert_eq!(mmap.u32_at(cq_off.head), 0);
+            assert_eq!(mmap.u32_at(cq_off.tail), 0);
+            assert_eq!(masks.cq, cq_entries - 1);
+            assert_eq!(mmap.u32_at(cq_off.overflow), 0);
+
+            // We expect the kernel copies p.sq_entries to the u32 pointed to by
+            // p.sq_off.ring_entries, see https://github.com/torvalds/linux/blob/v5.8/fs/io_uring.c#L7843-L7844.
+            assert_eq!(mmap.u32_at(p.sq_off.ring_entries), p.sq_entries);
+        }
+
+        let ioring = Self { mmap, sq_off, cq_off, sq_entries, cq_entries };
+
+        Ok((ioring, masks))
     }
 }
 
@@ -216,7 +251,7 @@ impl Ioring {
     // This method helped me catch a bug. I do not care if it is shallow.
     pub fn sq_tail(&self) -> u32 {
         // SAFETY: The offset is provided by the kernel.
-        unsafe { self.u32_at(self.sq_off.tail) }
+        unsafe { self.mmap.u32_at(self.sq_off.tail) }
     }
 
     pub fn sq_tail_write(&mut self, new_tail: u32) {
@@ -237,7 +272,7 @@ impl Ioring {
 
     pub fn cq_head(&self) -> u32 {
         // SAFETY: Offset provided by kernel.
-        unsafe { self.u32_at(self.cq_off.head) }
+        unsafe { self.mmap.u32_at(self.cq_off.head) }
     }
 
     pub fn cq_tail(&self) -> u32 {
@@ -251,14 +286,6 @@ impl Ioring {
             let atomic_head = unsafe { self.atomic_u32_at(self.cq_off.head) };
             atomic_head.fetch_add(count, Ordering::Release);
         }
-    }
-
-    /// # Safety
-    ///
-    /// The caller must ensure that the memory at `byte_offset` contains a valid
-    /// u32.
-    unsafe fn u32_at(&self, byte_offset: u32) -> u32 {
-        *self.mmap.ptr_at(byte_offset)
     }
 
     /// # Safety
@@ -281,12 +308,14 @@ impl Ioring {
     /// The caller must ensure that the memory at `byte_offset` is valid for
     /// atomic access as a u32.
     unsafe fn atomic_u32_at(&mut self, byte_offset: u32) -> &AtomicU32 {
-        AtomicU32::from_ptr(self.0.mut_ptr_at(byte_offset))
+        AtomicU32::from_ptr(self.mmap.mut_ptr_at(byte_offset))
     }
 
     unsafe fn raw_slice_at<T>(&self, byte_offset: u32, len: u32) -> *mut [T] {
-        self.0.check_bounds(byte_offset, (len as usize) * mem::size_of::<T>());
-        let ptr = (self.0.ptr as *mut u8).add(byte_offset as usize) as *mut T;
+        self.mmap
+            .check_bounds(byte_offset, (len as usize) * mem::size_of::<T>());
+        let ptr =
+            (self.mmap.ptr as *mut u8).add(byte_offset as usize) as *mut T;
         ptr::slice_from_raw_parts_mut(ptr, len as usize)
     }
 

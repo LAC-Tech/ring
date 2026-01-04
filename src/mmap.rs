@@ -174,7 +174,7 @@ pub struct Ioring {
     sq_off: io_sqring_offsets,
     cq_off: io_cqring_offsets,
     sq_entries: u32,
-    cq_entries: u32,
+    pub cq_entries: u32, // TODO: hack to make this public?
 }
 
 impl Ioring {

@@ -370,10 +370,10 @@ impl IoUring {
     fn copy_cqes_ready(&mut self, cqes: &mut [Cqe]) -> u32 {
         let ready = self.cq_ready();
         let count = cmp::min(cqes.len(), ready as usize);
-        let head = self.shared.cq_head() & self.mask;
+        let head = self.shared.cq_head() & self.cq.mask;
 
         // before wrapping
-        let n = cmp::min((self.entries - head) as usize, count);
+        let n = cmp::min((self.shared.cq_entries - head) as usize, count);
 
         let ring_cqes = self.shared.cqes();
 
@@ -907,14 +907,17 @@ mod zig_tests {
     use rustix::fs::{openat, Mode, OFlags, CWD};
     use rustix::{
         // TODO: the only place we use these constants, is in these tests?
-        io_uring::{io_uring_ptr, ioprio_union, IoringOp, IoringSqeFlags},
+        io_uring::{
+            io_uring_ptr, ioprio_union, IoringCqeFlags, IoringOp,
+            IoringSqeFlags,
+        },
     };
     use tempfile::{tempdir, TempDir};
 
     // It's just a u16 in the C struct
     fn ioprio_to_u16(i: ioprio_union) -> u16 {
         // 100% safe, 'cause Stone Cold said so
-        unsafe { mem::transmute::<_, u16>(i) }
+        unsafe { core::mem::transmute::<_, u16>(i) }
     }
 
     fn temp_file(dir: &TempDir, path: &'static str) -> OwnedFd {

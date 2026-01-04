@@ -1,16 +1,17 @@
+use core::cmp;
 use core::ffi::c_void;
 use core::mem;
 use core::ops::{Index, IndexMut};
 use core::ptr;
 use core::sync::atomic::{AtomicU32, Ordering};
 use rustix::fd::BorrowedFd;
-use rustix::io_uring::{io_uring_params, io_uring_sqe, IORING_OFF_SQES};
+use rustix::io_uring::{
+    io_uring_params, io_uring_sqe, IORING_OFF_SQES, IORING_OFF_SQ_RING,
+};
 use rustix::{io, mm};
 use std::os::fd::AsFd;
 
-use crate::CQE_SIZE;
-
-pub const SQE_SIZE: u32 = mem::size_of::<io_uring_sqe>() as u32;
+use crate::{CQE_SIZE, SQE_SIZE, U32_SIZE};
 
 // Convenience struct so mmap's are un-mapped on drop
 #[derive(Debug)]
@@ -120,12 +121,19 @@ pub struct Ioring(Mmap);
 
 impl Ioring {
     pub fn new(
-        size: usize,
-        fd: BorrowedFd,
-        flags: mm::MapFlags,
-        offset: u64,
+        ring_fd: BorrowedFd,
+        p: &io_uring_params,
     ) -> rustix::io::Result<Self> {
-        let mmap = Mmap::new(size, fd, flags, offset)?;
+        let size = cmp::max::<u32>(
+            p.sq_off.array + p.sq_entries * U32_SIZE,
+            p.cq_off.cqes + p.cq_entries * CQE_SIZE,
+        ) as usize;
+        let mmap = Mmap::new(
+            size,
+            ring_fd,
+            mm::MapFlags::SHARED | mm::MapFlags::POPULATE,
+            IORING_OFF_SQ_RING,
+        )?;
         Ok(Self(mmap))
     }
 }

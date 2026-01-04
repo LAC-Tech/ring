@@ -52,6 +52,7 @@ const _: () = assert!(usize::BITS >= 32);
 
 // I am constantly using these - makes it a little bit cleaner
 const U32_SIZE: u32 = mem::size_of::<u32>() as u32;
+const SQE_SIZE: u32 = mem::size_of::<io_uring_sqe>() as u32;
 const CQE_SIZE: u32 = mem::size_of::<Cqe>() as u32;
 
 const _: () = assert!(U32_SIZE == 4); // rofl why not
@@ -61,7 +62,7 @@ const _: () = assert!(U32_SIZE == 4); // rofl why not
 // compilation.
 const _: () = {
     assert!(mem::size_of::<io_uring_params>() == 120);
-    assert!(mmap::SQE_SIZE == 64);
+    assert!(SQE_SIZE == 64);
     assert!(CQE_SIZE == 16);
 
     assert!(IORING_OFF_SQ_RING == 0);
@@ -172,18 +173,8 @@ impl IoUring {
         assert_ne!(p.cq_entries, 0);
         assert!(p.cq_entries >= p.sq_entries);
 
-        let size = cmp::max::<u32>(
-            p.sq_off.array + p.sq_entries * U32_SIZE,
-            p.cq_off.cqes + p.cq_entries * CQE_SIZE,
-        ) as usize;
-
-        let mmap = mmap::Ioring::new(
-            size,
-            fd.as_fd(),
-            mm::MapFlags::SHARED | mm::MapFlags::POPULATE,
-            IORING_OFF_SQ_RING,
-        )
-        .map_err(UnexpectedErrno)?;
+        let mmap =
+            mmap::Ioring::new(fd.as_fd(), &p).map_err(UnexpectedErrno)?;
 
         // SAFETY: We trust the kernel to provide valid offsets within the
         // memory it just mapped for us.

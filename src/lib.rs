@@ -296,7 +296,6 @@ impl IoUring {
         &mut self,
         flags: &mut IoringEnterFlags,
     ) -> bool {
-        assert!(flags.is_empty());
         if !self.flags.contains(IoringSetupFlags::SQPOLL) {
             return true;
         }

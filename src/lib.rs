@@ -242,17 +242,17 @@ impl IoUring {
     /// - [`Errno::AGAIN`] The kernel was unable to allocate memory or ran out
     ///   of resources for the request. The application should wait for some
     ///   completions and try again.
-    /// - [`Errno::BADF`] The SQE `fd` is invalid, or `IOSQE_FIXED_FILE` was set
-    ///   but no files were registered.
+    /// - [`Errno::BADF`] The SQE `fd` is invalid, or
+    ///   [`IoringSqeFlags::FIXED_FILE`] was set but no files were registered.
     /// - [`Errno::BADFD`] The file descriptor is valid, but the ring is not in
     ///   the right state. See io_uring_register(2) for how to enable the ring.
     /// - [`Errno::BUSY`] The application attempted to overcommit the number of
     ///   requests it can have pending. The application should wait for some
     ///   completions and try again.
     /// - [`Errno::INVAL`] The SQE is invalid, or valid but the ring was setup
-    ///   with `IORING_SETUP_IOPOLL`.
+    ///   with [`IoringSetupFlags::IOPOLL`].
     /// - [`Errno::FAULT`] The buffer is outside the process' accessible address
-    ///   space, or `IORING_OP_READ_FIXED` or `IORING_OP_WRITE_FIXED` was
+    ///   space, or [`IoringOp::ReadFixed`] or [`IoringOp::WriteFixed`] was
     ///   specified but no buffers were registered, or the range described by
     ///   `addr` and `len` is not within the buffer registered at `buf_index`.
     /// - [`Errno::NXIO`] Ring is shutting down.
@@ -261,7 +261,7 @@ impl IoUring {
     ///   this kernel (more likely).
     /// - [`Errno::INTR`] The operation was interrupted by a delivery of a
     ///   signal before it could complete. This can happen while waiting for
-    ///   events with `IORING_ENTER_GETEVENTS`.
+    ///   events with [`IoringEnterFlags::GETEVENTS`].
     pub unsafe fn enter(
         &mut self,
         to_submit: u32,

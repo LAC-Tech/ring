@@ -23,8 +23,10 @@
 #![doc = include_str!("../examples/readme_no_std.rs")]
 //! ```
 
+pub mod entry;
 mod mmap;
-pub use mmap::Cqe;
+
+pub use crate::entry::*;
 pub use rustix;
 
 // These form part of the public API
@@ -56,7 +58,6 @@ pub struct IoUring {
     cq: CompletionQueue,
 }
 
-use rustix::io::Errno;
 impl IoUring {
     /// A friendly way to setup an io_uring, with default linux.io_uring_params.
     /// `entries` must be a power of two between 1 and 32768, although the

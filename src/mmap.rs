@@ -7,11 +7,12 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use rustix::fd::BorrowedFd;
 use rustix::io_uring::{
     io_cqring_offsets, io_sqring_offsets, io_uring_params, io_uring_sqe,
-    io_uring_user_data, IoringCqeFlags, IoringSqFlags, IORING_OFF_CQ_RING,
-    IORING_OFF_SQES, IORING_OFF_SQ_RING,
+    IoringSqFlags, IORING_OFF_CQ_RING, IORING_OFF_SQES, IORING_OFF_SQ_RING,
 };
 use rustix::{io, mm};
 use std::os::fd::AsFd;
+
+use crate::entry::Cqe;
 
 // Sanity check that we can cast from u32 to usize
 const _: () = assert!(usize::BITS >= 32);
@@ -32,18 +33,6 @@ const _: () = {
     assert!(IORING_OFF_CQ_RING == 0x8000000);
     assert!(IORING_OFF_SQES == 0x10000000);
 };
-
-/// An io_uring Completion Queue Entry.
-///
-/// While rustix provides one, it has some issues:
-/// <https://github.com/bytecodealliance/rustix/issues/1568>
-#[repr(C)]
-#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
-pub struct Cqe {
-    pub user_data: io_uring_user_data,
-    pub res: i32,
-    pub flags: IoringCqeFlags,
-}
 
 // Convenience struct so mmap's are un-mapped on drop
 #[derive(Debug)]

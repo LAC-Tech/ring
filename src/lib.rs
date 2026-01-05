@@ -33,18 +33,17 @@ pub use rustix;
 pub use rustix::fd::BorrowedFd;
 pub use rustix::io::{IoSlice, IoSliceMut};
 pub use rustix::io_uring::{
-    io_uring_params, io_uring_sqe, IoringEnterFlags, IoringOp, ReadWriteFlags,
+    io_uring_params, IoringEnterFlags, IoringOp, ReadWriteFlags,
 };
 
 use core::ffi::c_void;
 use core::ptr::null;
 use core::{assert, assert_eq, assert_ne, cmp};
-use rustix::fd::{AsFd, AsRawFd, OwnedFd};
+use rustix::fd::{AsFd, OwnedFd};
 use rustix::io;
 use rustix::io_uring::{
-    io_uring_enter, io_uring_ptr, io_uring_register, io_uring_setup,
-    IoringFeatureFlags, IoringRegisterOp, IoringSetupFlags, IoringSqFlags,
-    IoringSqeFlags,
+    io_uring_enter, io_uring_register, io_uring_setup, IoringFeatureFlags,
+    IoringRegisterOp, IoringSetupFlags, IoringSqFlags,
 };
 
 /// The main entry point to the library.
@@ -166,16 +165,16 @@ impl IoUring {
     /// Returns a reference to a vacant SQE, or an error if the submission
     /// queue is full. We follow the implementation (and atomics) of
     /// liburing's `io_uring_get_sqe()`, EXCEPT that the fields are zeroed out.
-    pub fn get_sqe(&mut self) -> Result<&mut io_uring_sqe, err::GetSqe> {
+    pub fn get_sqe(&mut self) -> Result<&mut Sqe, err::GetSqe> {
         let sqe = self.get_sqe_raw()?;
-        *sqe = io_uring_sqe::default();
+        *sqe = Sqe::default();
         Ok(sqe)
     }
 
     /// Returns a reference to a vacant SQE, or an error if the submission
     /// queue is full. We follow the implementation (and atomics) of
     /// liburing's `io_uring_get_sqe()` exactly.
-    pub fn get_sqe_raw(&mut self) -> Result<&mut io_uring_sqe, err::GetSqe> {
+    pub fn get_sqe_raw(&mut self) -> Result<&mut Sqe, err::GetSqe> {
         let head = self.shared.sq_head();
         // Remember that these head and tail offsets wrap around every four
         // billion operations. We must therefore use wrapping addition
@@ -439,7 +438,7 @@ impl IoUring {
         self.shared.cq_advance(count);
     }
 
-    /// Registers an array of buffers for use with [`SqeExt::prep_readv_fixed`]
+    /// Registers an array of buffers for use with [`Sqe::prep_readv_fixed`]
     /// and [`SqeExt::prep_writev_fixed`].
     ///
     /// # Safety
@@ -492,219 +491,6 @@ impl IoUring {
             null(),
             0,
         )
-    }
-}
-
-// IoUring.zig has top level functions like read, nop etc inside the main struct
-// But I think it's a lot more ergonomic to keep the IoUring interface small,
-// and also make it clear to people that what you are doing is mutating SQEs.
-/// [`io_uring_sqe`] is not the most ergonomic data structure, so this is a
-/// collection of methods to set various fields. These are mostly use to set up
-/// SQE's to perform specific syscalls when submitted to the kernel.
-///
-///These all only set the relevant fields,
-/// they do not zero out everything - they are intented be called on the return
-/// value of [`IoUring::get_sqe`].
-///
-/// Mostly these follow liburing's `io_uring_accept_prep_`, but with some extra
-/// additions to avoid flag and union wrangling. syscalls when they are
-/// submitted.
-pub trait SqeExt {
-    // Pure convenience functions. So far only used in tests but might be useful
-    // for the user?
-    fn addr(&self) -> io_uring_ptr;
-    fn off(&self) -> u64;
-
-    /// A no-op is more useful than may appear at first glance. For example, you
-    /// could call `drain_previous_sqes()` on the returned SQE, to use the no-op
-    /// to know when the ring is idle before acting on a kill signal.
-    fn prep_nop(&mut self, user_data: u64);
-
-    fn prep_fsync(
-        &mut self,
-        user_data: u64,
-        fd: BorrowedFd,
-        flags: ReadWriteFlags,
-    );
-
-    fn set_len(&mut self, len: usize);
-    fn set_buf<T>(&mut self, ptr: *const T, len: usize, offset: u64);
-
-    fn prep_read(
-        &mut self,
-        user_data: u64,
-        fd: BorrowedFd,
-        buf: &mut [u8],
-        offset: u64,
-    );
-
-    fn prep_readv(
-        &mut self,
-        user_data: u64,
-        fd: BorrowedFd,
-        iovecs: &[IoSliceMut<'_>],
-        offset: u64,
-    );
-
-    fn prep_readv_fixed(
-        &mut self,
-        user_data: u64,
-        file_index: usize,
-        iovecs: &[IoSliceMut<'_>],
-        offset: u64,
-    );
-
-    fn prep_write(
-        &mut self,
-        user_data: u64,
-        fd: BorrowedFd,
-        buf: &[u8],
-        offset: u64,
-    );
-
-    fn prep_writev(
-        &mut self,
-        user_data: u64,
-        fd: BorrowedFd,
-        bufs: &[io::IoSlice<'_>],
-        offset: u64,
-    );
-
-    fn prep_splice(
-        &mut self,
-        user_data: u64,
-        fd_in: BorrowedFd,
-        off_in: u64,
-        fd_out: BorrowedFd,
-        off_out: u64,
-        len: usize,
-    );
-}
-
-impl SqeExt for &mut io_uring_sqe {
-    fn addr(&self) -> io_uring_ptr {
-        // SAFETY: All the fields have the same underlying representation.
-        unsafe { self.addr_or_splice_off_in.addr }
-    }
-
-    fn off(&self) -> u64 {
-        // SAFETY: All the fields have the same underlying representation.
-        unsafe { self.off_or_addr2.off }
-    }
-
-    fn prep_nop(&mut self, user_data: u64) {
-        self.opcode = IoringOp::Nop;
-        self.user_data = user_data.into();
-    }
-
-    fn prep_fsync(
-        &mut self,
-        user_data: u64,
-        fd: BorrowedFd,
-        flags: ReadWriteFlags,
-    ) {
-        self.opcode = IoringOp::Fsync;
-        self.fd = fd.as_raw_fd();
-        self.op_flags.rw_flags = flags;
-        self.user_data.u64_ = user_data;
-    }
-
-    fn set_len(&mut self, len: usize) {
-        self.len.len =
-            len.try_into().expect("io_uring requires lengths to fit in a u32");
-    }
-
-    fn set_buf<T>(&mut self, ptr: *const T, len: usize, offset: u64) {
-        self.addr_or_splice_off_in.addr = io_uring_ptr::new(ptr as *mut c_void);
-        self.set_len(len);
-        self.off_or_addr2.off = offset;
-    }
-
-    fn prep_read(
-        &mut self,
-        user_data: u64,
-        fd: BorrowedFd,
-        buf: &mut [u8],
-        offset: u64,
-    ) {
-        self.opcode = IoringOp::Read;
-        self.fd = fd.as_raw_fd();
-        self.set_buf(buf.as_ptr(), buf.len(), offset);
-        self.user_data.u64_ = user_data;
-    }
-
-    fn prep_readv(
-        &mut self,
-        user_data: u64,
-        fd: BorrowedFd,
-        iovecs: &[IoSliceMut<'_>],
-        offset: u64,
-    ) {
-        self.opcode = IoringOp::Readv;
-        self.fd = fd.as_raw_fd();
-        self.set_buf(iovecs.as_ptr(), iovecs.len(), offset);
-        self.user_data.u64_ = user_data;
-    }
-
-    fn prep_readv_fixed(
-        &mut self,
-        user_data: u64,
-        file_index: usize,
-        iovecs: &[IoSliceMut<'_>],
-        offset: u64,
-    ) {
-        self.opcode = IoringOp::Readv;
-        self.fd = file_index
-            .try_into()
-            .expect("fixed file index must fit into a u32");
-        self.set_buf(iovecs.as_ptr(), iovecs.len(), offset);
-        self.flags.set(IoringSqeFlags::FIXED_FILE, true);
-        self.user_data.u64_ = user_data;
-    }
-
-    fn prep_write(
-        &mut self,
-        user_data: u64,
-        fd: BorrowedFd,
-        buf: &[u8],
-        offset: u64,
-    ) {
-        self.opcode = IoringOp::Write;
-        self.fd = fd.as_raw_fd();
-        self.set_buf(buf.as_ptr(), buf.len(), offset);
-        self.user_data.u64_ = user_data;
-    }
-
-    fn prep_writev(
-        &mut self,
-        user_data: u64,
-        fd: BorrowedFd,
-        iovecs: &[IoSlice<'_>],
-        offset: u64,
-    ) {
-        self.opcode = IoringOp::Writev;
-        self.fd = fd.as_raw_fd();
-        self.set_buf(iovecs.as_ptr(), iovecs.len(), offset);
-        self.user_data.u64_ = user_data;
-    }
-
-    fn prep_splice(
-        &mut self,
-        user_data: u64,
-        fd_in: BorrowedFd,
-        off_in: u64,
-        fd_out: BorrowedFd,
-        off_out: u64,
-        len: usize,
-    ) {
-        self.opcode = IoringOp::Splice;
-        self.fd = fd_out.as_raw_fd();
-        self.set_len(len);
-        self.off_or_addr2.off = off_out;
-        self.addr_or_splice_off_in.splice_off_in = off_in;
-        self.splice_fd_in_or_file_index_or_addr_len.splice_fd_in =
-            fd_in.as_raw_fd();
-        self.user_data.u64_ = user_data;
     }
 }
 
@@ -802,6 +588,7 @@ mod zig_tests {
     use super::*;
     use err::*;
     use pretty_assertions::assert_eq;
+    use rustix::fd::AsRawFd;
     use rustix::fs::{openat, Mode, OFlags, CWD};
     use rustix::{
         // TODO: the only place we use these constants, is in these tests?
@@ -859,7 +646,7 @@ mod zig_tests {
     #[test]
     fn nop() {
         let mut ring = IoUring::new(1).unwrap();
-        let mut sqe = ring.get_sqe().unwrap();
+        let sqe = ring.get_sqe().unwrap();
         sqe.prep_nop(0xaaaaaaaa);
 
         assert_eq!(sqe.opcode, IoringOp::Nop);
@@ -908,7 +695,7 @@ mod zig_tests {
         assert_eq!(ring.shared.cq_head(), 1);
         assert_eq!(ring.cq_ready(), 0);
 
-        let mut sqe_barrier = ring.get_sqe().unwrap();
+        let sqe_barrier = ring.get_sqe().unwrap();
         sqe_barrier.prep_nop(0xbbbbbbbb);
         sqe_barrier.flags.set(IoringSqeFlags::IO_DRAIN, true);
         assert_eq!(unsafe { ring.submit() }, Ok(1));
@@ -943,7 +730,7 @@ mod zig_tests {
 
         let mut buffer = [42u8; 128];
         let iovecs = [IoSliceMut::new(&mut buffer)];
-        let mut sqe = ring.get_sqe().unwrap();
+        let sqe = ring.get_sqe().unwrap();
         sqe.prep_readv_fixed(0xcccccccc, fd_index, &iovecs, 0);
         assert_eq!(sqe.opcode, IoringOp::Readv);
         assert!(sqe.flags.contains(IoringSqeFlags::FIXED_FILE));
@@ -979,21 +766,21 @@ mod zig_tests {
         let mut iovecs_read = [IoSliceMut::new(&mut buffer_read)];
 
         {
-            let mut sqe = ring.get_sqe().unwrap();
+            let sqe = ring.get_sqe().unwrap();
             sqe.prep_writev(0xdddddddd, fd.as_fd(), &iovecs_write, 17);
             assert_eq!(sqe.opcode, IoringOp::Writev);
             assert_eq!(sqe.off(), 17);
             sqe.flags.set(IoringSqeFlags::IO_LINK, true);
         }
         {
-            let mut sqe = ring.get_sqe().unwrap();
+            let sqe = ring.get_sqe().unwrap();
             sqe.prep_fsync(0xeeeeeeee, fd.as_fd(), ReadWriteFlags::empty());
             assert_eq!(sqe.opcode, IoringOp::Fsync);
             assert_eq!(sqe.fd, fd.as_raw_fd());
             sqe.flags.set(IoringSqeFlags::IO_LINK, true);
         }
         {
-            let mut sqe = ring.get_sqe().unwrap();
+            let sqe = ring.get_sqe().unwrap();
             sqe.prep_readv(0xffffffff, fd.as_fd(), &mut iovecs_read, 17);
             assert_eq!(sqe.opcode, IoringOp::Readv);
             assert_eq!(sqe.off(), 17);
@@ -1036,13 +823,13 @@ mod zig_tests {
         const BUFFER_WRITE: [u8; 20] = [97; 20];
         let mut buffer_read = [98u8; 20];
 
-        let mut sqe_write = ring.get_sqe().unwrap();
+        let sqe_write = ring.get_sqe().unwrap();
         sqe_write.prep_write(0x11111111, fd.as_fd(), &BUFFER_WRITE, 10);
         assert_eq!(sqe_write.opcode, IoringOp::Write);
         assert_eq!(sqe_write.off(), 10);
         sqe_write.flags.set(IoringSqeFlags::IO_LINK, true);
 
-        let mut sqe_read = ring.get_sqe().unwrap();
+        let sqe_read = ring.get_sqe().unwrap();
         sqe_read.prep_read(0x22222222, fd.as_fd(), &mut buffer_read, 10);
         assert_eq!(sqe_read.opcode, IoringOp::Read);
         assert_eq!(sqe_read.off(), 10);
@@ -1086,7 +873,7 @@ mod zig_tests {
         let pipe_offset = u64::MAX;
 
         {
-            let mut sqe = ring.get_sqe().unwrap();
+            let sqe = ring.get_sqe().unwrap();
             sqe.prep_splice(
                 0x11111111,
                 fd_src.as_fd(),
@@ -1101,7 +888,7 @@ mod zig_tests {
             sqe.flags.set(IoringSqeFlags::IO_LINK, true);
         }
         {
-            let mut sqe = ring.get_sqe().unwrap();
+            let sqe = ring.get_sqe().unwrap();
             sqe.prep_splice(
                 0x22222222,
                 reading_fd_pipe.as_fd(),
@@ -1120,7 +907,7 @@ mod zig_tests {
         }
 
         {
-            let mut sqe = ring.get_sqe().unwrap();
+            let sqe = ring.get_sqe().unwrap();
             sqe.prep_read(0x33333333, fd_dst.as_fd(), &mut buffer_read, 10);
             assert_eq!(sqe.opcode, IoringOp::Read);
             assert_eq!(sqe.off(), 10);

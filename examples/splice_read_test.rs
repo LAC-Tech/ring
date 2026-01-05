@@ -1,4 +1,4 @@
-use hringas::{IoUring, IoringOp, SqeExt};
+use hringas::{IoUring, IoringOp};
 use rustix::fd::{AsFd, OwnedFd};
 use rustix::fs::{openat, Mode, OFlags, CWD};
 use rustix::io_uring::{io_uring_ptr, IoringCqeFlags, IoringSqeFlags};
@@ -34,7 +34,7 @@ fn test() {
     let pipe_offset = u64::MAX;
 
     {
-        let mut sqe = ring.get_sqe().unwrap();
+        let sqe = ring.get_sqe().unwrap();
         sqe.prep_splice(
             0x11111111,
             fd_src.as_fd(),
@@ -49,7 +49,7 @@ fn test() {
         sqe.flags.set(IoringSqeFlags::IO_LINK, true);
     }
     {
-        let mut sqe = ring.get_sqe().unwrap();
+        let sqe = ring.get_sqe().unwrap();
         sqe.prep_splice(
             0x22222222,
             reading_fd_pipe.as_fd(),
@@ -68,7 +68,7 @@ fn test() {
     }
 
     {
-        let mut sqe = ring.get_sqe().unwrap();
+        let sqe = ring.get_sqe().unwrap();
         sqe.prep_read(0x33333333, fd_dst.as_fd(), &mut buffer_read, 10);
         assert_eq!(sqe.opcode, IoringOp::Read);
         assert_eq!(sqe.off(), 10);

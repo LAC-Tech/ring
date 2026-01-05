@@ -6,19 +6,19 @@ use core::ptr;
 use core::sync::atomic::{AtomicU32, Ordering};
 use rustix::fd::BorrowedFd;
 use rustix::io_uring::{
-    io_cqring_offsets, io_sqring_offsets, io_uring_params, io_uring_sqe,
-    IoringSqFlags, IORING_OFF_CQ_RING, IORING_OFF_SQES, IORING_OFF_SQ_RING,
+    io_cqring_offsets, io_sqring_offsets, io_uring_params, IoringSqFlags,
+    IORING_OFF_CQ_RING, IORING_OFF_SQES, IORING_OFF_SQ_RING,
 };
 use rustix::{io, mm};
 use std::os::fd::AsFd;
 
-use crate::entry::Cqe;
+use crate::entry::*;
 
 // Sanity check that we can cast from u32 to usize
 const _: () = assert!(usize::BITS >= 32);
 
 // Just reducing some line noise
-const SQE_SIZE: u32 = size_of::<io_uring_sqe>() as u32;
+const SQE_SIZE: u32 = size_of::<Sqe>() as u32;
 const CQE_SIZE: u32 = size_of::<Cqe>() as u32;
 
 // Taken from the zig test "structs/offsets/entries"
@@ -128,7 +128,7 @@ impl Sqes {
 }
 
 impl Index<u32> for Sqes {
-    type Output = io_uring_sqe;
+    type Output = Sqe;
 
     fn index(&self, idx: u32) -> &Self::Output {
         let byte_offset = idx * SQE_SIZE;

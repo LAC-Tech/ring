@@ -1,6 +1,6 @@
 #![no_std]
 use hringas::rustix::fs::{openat, Mode, OFlags, CWD};
-use hringas::{Cqe, IoUring, SqeExt};
+use hringas::{Cqe, IoUring};
 use rustix::fd::AsFd;
 
 fn main() {
@@ -9,7 +9,7 @@ fn main() {
     let fd = openat(CWD, "README.md", OFlags::RDONLY, Mode::empty()).unwrap();
     let mut buf = [0; 1024];
 
-    let mut sqe = ring.get_sqe().unwrap();
+    let sqe = ring.get_sqe().unwrap();
     sqe.prep_read(0x42, fd.as_fd(), &mut buf, 0);
 
     // Note that the developer needs to ensure

@@ -1,4 +1,4 @@
-use hringas::{Cqe, IoUring, SqeExt};
+use hringas::{Cqe, IoUring};
 use std::fs;
 use std::os::fd::AsFd;
 
@@ -8,7 +8,7 @@ fn main() {
     let fd = fs::File::open("README.md").unwrap();
     let mut buf = vec![0; 1024];
 
-    let mut sqe = ring.get_sqe().unwrap();
+    let sqe = ring.get_sqe().unwrap();
     sqe.prep_read(0x42, fd.as_fd(), &mut buf, 0);
 
     // Note that the developer needs to ensure

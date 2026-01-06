@@ -62,7 +62,7 @@ impl Mmap {
     /// The caller must ensure that the memory at `byte_offset` is valid for
     /// mutation as type `T` and follows Rust's aliasing rules.
     unsafe fn mut_ptr_at<T>(&mut self, byte_offset: u32) -> *mut T {
-        self.ptr.cast::<u8>().add(byte_offset as usize).cast::<T>()
+        self.ptr.cast::<u8>().add(byte_offset as usize).cast()
     }
 
     /// # Safety
@@ -70,7 +70,7 @@ impl Mmap {
     /// The caller must ensure that the memory at `byte_offset` is a valid
     /// representation of type `T`.
     unsafe fn ptr_at<T>(&self, byte_offset: u32) -> *const T {
-        (self.ptr as *const u8).add(byte_offset as usize).cast::<T>()
+        (self.ptr as *const u8).add(byte_offset as usize).cast()
     }
 
     /// # Safety
@@ -86,7 +86,7 @@ impl Mmap {
     /// The caller must ensure that the memory starting at `byte_offset` is a
     /// valid representation of `len` elements of type `T`.
     unsafe fn raw_slice_at<T>(&self, byte_offset: u32, len: u32) -> *mut [T] {
-        let ptr = self.ptr.cast::<u8>().add(byte_offset as usize).cast::<T>();
+        let ptr = self.ptr.cast::<u8>().add(byte_offset as usize).cast();
         ptr::slice_from_raw_parts_mut(ptr, len as usize)
     }
 }

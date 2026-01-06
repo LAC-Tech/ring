@@ -58,8 +58,6 @@ It's heavily based off of std.os.linux.IoUring.zig, but also takes some pointers
 | copy_cqes with wrapping sq.cqes buffer         | ❌     |
 | bind/listen/connect                            | ❌     |
 
-Rust io_uring bindings.
-
 ## Contribute
 
 Pull requests welcome.

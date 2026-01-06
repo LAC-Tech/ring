@@ -50,7 +50,7 @@ dependencies = [
 
 [[package]]
 name = "hringas"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "pretty_assertions",
  "rustix",

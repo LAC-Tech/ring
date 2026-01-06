@@ -978,7 +978,7 @@ mod zig_tests {
         let tmp = tempdir().unwrap();
         let fd = temp_file(&tmp, "test_io_uring_write_read_fixed");
 
-        let mut raw_buffers: [[u8; 11]; 2] = [[0; 11]; 2];
+        let mut raw_buffers = [[0u8; 11]; 2];
         // First buffer will be written to the file.
         raw_buffers[0].fill(b'z');
         raw_buffers[0][.."foobar".len()].copy_from_slice(b"foobar");

@@ -23,7 +23,7 @@ It's heavily based off of std.os.linux.IoUring.zig, but also takes some pointers
 | write/read                                     | ✅     |
 | splice/read                                    | ✅     |
 | write_fixed/read_fixed                         | ✅     |
-| openat                                         | ❌     |
+| openat                                         | ✅     |
 | close                                          | ❌     |
 | accept/connect/send/recv                       | ❌     |
 | sendmsg/recvmsg                                | ❌     |

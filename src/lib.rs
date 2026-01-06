@@ -107,7 +107,7 @@ impl IoUring {
         assert!(
             p.cq_entries == 0 || p.flags.contains(IoringSetupFlags::CQSIZE)
         );
-        assert!(p.features.is_empty());
+        assert_eq!(p.features, IoringFeatureFlags::empty());
         assert!(p.wq_fd == 0 || p.flags.contains(IoringSetupFlags::ATTACH_WQ));
         assert_eq!(p.resv, [0, 0, 0]);
 
@@ -609,10 +609,11 @@ mod test_ioring_op_uring_cmd {
 #[cfg(test)]
 mod zig_tests {
     use super::*;
+    use core::ffi::c_void;
     use err::*;
     use pretty_assertions::assert_eq;
     use rustix::fd::AsRawFd;
-    use rustix::fs::{openat, Mode, OFlags, CWD};
+    use rustix::fs::{self, Mode, OFlags, CWD};
     use rustix::{
         // TODO: the only place we use these constants, is in these tests?
         io_uring::{
@@ -629,7 +630,7 @@ mod zig_tests {
     }
 
     fn temp_file(dir: &TempDir, path: &'static str) -> OwnedFd {
-        openat(
+        fs::openat(
             CWD,
             dir.path().join(path),
             OFlags::CREATE | OFlags::RDWR | OFlags::TRUNC,
@@ -737,8 +738,8 @@ mod zig_tests {
     #[test]
     fn readv() {
         let mut ring = IoUring::new(1).unwrap();
-        let fd =
-            openat(CWD, "/dev/zero", OFlags::RDONLY, Mode::empty()).unwrap();
+        let fd = fs::openat(CWD, "/dev/zero", OFlags::RDONLY, Mode::empty())
+            .unwrap();
 
         // Linux Kernel 5.4 supports IORING_REGISTER_FILES but not sparse fd
         // sets (i.e. an fd of -1). Linux Kernel 5.5 adds support for
@@ -1014,11 +1015,11 @@ mod zig_tests {
 
         assert_eq!(cqe_write.user_data.u64_(), 0x45454545);
         assert_eq!(cqe_write.res, buffers[0].iov_len as i32);
-        assert!(cqe_write.flags.is_empty());
+        assert_eq!(cqe_write.flags, IoringCqeFlags::empty());
 
         assert_eq!(cqe_read.user_data.u64_(), 0x12121212);
         assert_eq!(cqe_read.res, buffers[1].iov_len as i32);
-        assert!(cqe_read.flags.is_empty());
+        assert_eq!(cqe_read.flags, IoringCqeFlags::empty());
 
         let copy = unsafe {
             core::slice::from_raw_parts(buffers[1].iov_base.cast::<u8>(), 11)
@@ -1027,6 +1028,46 @@ mod zig_tests {
         assert_eq!(&copy[0..3], b"\x00\x00\x00");
         assert_eq!(&copy[3..9], b"foobar");
         assert_eq!(&copy[9..11], b"zz");
+
+        assert_ring_clean(&mut ring);
+    }
+
+    #[test]
+    fn openat() {
+        let mut ring = IoUring::new(1).unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let tmp = std::fs::File::open(tmp.path()).unwrap();
+
+        let path = c"test_io_uring_openat";
+
+        let flags = OFlags::CLOEXEC | OFlags::RDWR | OFlags::CREATE;
+        let mode = Mode::from(0o666);
+
+        let sqe = ring.get_sqe().unwrap();
+        sqe.prep_openat(0x33333333, tmp.as_fd(), path, flags, mode);
+        assert_eq!(sqe.opcode, IoringOp::Openat);
+        assert_eq!(sqe.flags, IoringSqeFlags::empty());
+        assert_eq!(ioprio_to_u16(sqe.ioprio), 0);
+        assert_eq!(sqe.fd, tmp.as_raw_fd());
+        assert_eq!(sqe.off(), 0);
+        assert_eq!(sqe.addr().ptr, path.as_ptr() as *mut c_void);
+        assert_eq!(unsafe { sqe.len.len }, mode.as_raw_mode());
+        assert_eq!(unsafe { sqe.op_flags.open_flags }, flags);
+        assert_eq!(sqe.user_data.u64_(), 0x33333333);
+        assert_eq!(unsafe { sqe.buf.buf_index }, 0);
+        assert_eq!(sqe.personality, 0);
+        assert_eq!(
+            unsafe { sqe.splice_fd_in_or_file_index_or_addr_len.splice_fd_in },
+            0
+        );
+        assert_eq!(unsafe { sqe.addr3_or_cmd.addr3.addr3 }, 0);
+
+        assert_eq!(unsafe { ring.submit() }, Ok(1));
+
+        let cqe = unsafe { ring.copy_cqe() }.unwrap();
+        assert_eq!(cqe.user_data.u64_(), 0x33333333);
+        assert!(cqe.res > 0);
+        assert_eq!(cqe.flags, IoringCqeFlags::empty());
 
         assert_ring_clean(&mut ring);
     }

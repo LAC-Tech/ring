@@ -949,4 +949,28 @@ mod zig_tests {
         assert_eq!(&buffer_write, &buffer_read);
         assert_ring_clean(&mut ring);
     }
+
+    #[test]
+    fn write_fixed_read_fixed() {
+        let mut ring = IoUring::new(2).unwrap();
+
+        let tmp = tempdir().unwrap();
+        let fd = temp_file(&tmp, "test_io_uring_write_read_fixed");
+
+        let mut raw_buffers: [[u8; 11]; 2] = [[0; 11]; 2];
+        // First buffer will be written to the file.
+        raw_buffers[0].fill(b'z');
+        raw_buffers[0][.."foobar".len()].copy_from_slice(b"foobar");
+
+        let mut buffers = [
+            iovec {
+                iov_base: raw_buffers[0].as_mut_ptr().cast(),
+                iov_len: raw_buffers[0].len(),
+            },
+            iovec {
+                iov_base: raw_buffers[1].as_mut_ptr().cast(),
+                iov_len: raw_buffers[1].len(),
+            },
+        ];
+    }
 }

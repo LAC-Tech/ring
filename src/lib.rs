@@ -501,18 +501,19 @@ impl IoUring {
     ///
     /// The caller must ensure that no pending SQEs reference the registered
     /// buffers.
-    pub fn register_buffers(&mut self, buffers: &[iovec]) -> io::Result<u32> {
-        unsafe {
-            io_uring_register(
-                self.fd(),
-                IoringRegisterOp::RegisterFiles,
-                buffers.as_ptr().cast(),
-                buffers
-                    .len()
-                    .try_into()
-                    .expect("length of buffers must fit in a u32"),
-            )
-        }
+    pub unsafe fn register_buffers(
+        &mut self,
+        buffers: &[iovec],
+    ) -> io::Result<u32> {
+        io_uring_register(
+            self.fd(),
+            IoringRegisterOp::RegisterFiles,
+            buffers.as_ptr().cast(),
+            buffers
+                .len()
+                .try_into()
+                .expect("length of buffers must fit in a u32"),
+        )
     }
 }
 
@@ -747,7 +748,7 @@ mod zig_tests {
         // We therefore avoid stressing sparse fd sets here:
         let registered_fds = [fd.as_fd(); 1];
         let fd_index = 0;
-        let registered_count =
+        let registered =
             unsafe { ring.register_files(&registered_fds).unwrap() };
 
         let mut buffer = [42u8; 128];
@@ -772,8 +773,8 @@ mod zig_tests {
         assert_eq!(cqe.flags, IoringCqeFlags::empty());
         assert!(&buffer.iter().all(|&n| n == 0));
 
-        let unregistered_count = unsafe { ring.unregister_files().unwrap() };
-        assert_eq!(registered_count, unregistered_count);
+        let unregistered = unsafe { ring.unregister_files().unwrap() };
+        assert_eq!(registered, unregistered);
         assert_ring_clean(&mut ring);
     }
 
@@ -982,7 +983,7 @@ mod zig_tests {
         raw_buffers[0].fill(b'z');
         raw_buffers[0][.."foobar".len()].copy_from_slice(b"foobar");
 
-        let mut buffers = [
+        let buffers = [
             iovec {
                 iov_base: raw_buffers[0].as_mut_ptr().cast(),
                 iov_len: raw_buffers[0].len(),
@@ -992,5 +993,7 @@ mod zig_tests {
                 iov_len: raw_buffers[1].len(),
             },
         ];
+
+        let registered = unsafe { ring.register_buffers(&buffers).unwrap() };
     }
 }

@@ -31,9 +31,10 @@ pub use rustix;
 
 // These form part of the public API
 pub use rustix::fd::BorrowedFd;
+pub use rustix::io::Errno;
 pub use rustix::io::{IoSlice, IoSliceMut};
 pub use rustix::io_uring::{
-    io_uring_params, IoringEnterFlags, IoringOp, ReadWriteFlags,
+    io_uring_params, IoringEnterFlags, IoringOp, IoringSqeFlags, ReadWriteFlags,
 };
 
 use core::ffi::c_void;
@@ -239,8 +240,8 @@ impl IoUring {
     /// # Errors
     ///
     /// An [`io::Errno`] can be:
-    /// - [`Errno::AGAIN`] The kernel was unable to allocate memory or ran out
-    ///   of resources for the request. The application should wait for some
+    /// - [`io::Errno::AGAIN`] The kernel was unable to allocate memory or ran
+    ///   out of resources for the request. The application should wait for some
     ///   completions and try again.
     /// - [`Errno::BADF`] The SQE `fd` is invalid, or
     ///   [`IoringSqeFlags::FIXED_FILE`] was set but no files were registered.
@@ -439,7 +440,7 @@ impl IoUring {
     }
 
     /// Registers an array of buffers for use with [`Sqe::prep_readv_fixed`]
-    /// and [`SqeExt::prep_writev_fixed`].
+    /// and [`Sqe::prep_writev_fixed`].
     ///
     /// # Safety
     ///

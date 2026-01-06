@@ -52,7 +52,7 @@ pub struct Sqe {
 // and also make it clear to people that what you are doing is mutating SQEs.
 /// These all only set the relevant fields,
 /// they do not zero out everything - they are intented be called on the return
-/// value of [`IoUring::get_sqe`].
+/// value of [`crate::IoUring::get_sqe`].
 ///
 /// Mostly these follow liburing's `io_uring_accept_prep_`, but with some extra
 /// additions to avoid flag and union wrangling. syscalls when they are

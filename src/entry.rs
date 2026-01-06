@@ -1,5 +1,4 @@
 use core::ffi::c_void;
-use rustix::buffer;
 use rustix::fd::{AsRawFd, BorrowedFd, RawFd};
 use rustix::io::ReadWriteFlags;
 use rustix::io_uring::{

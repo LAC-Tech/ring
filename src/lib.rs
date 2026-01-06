@@ -32,9 +32,9 @@ pub use rustix;
 // These form part of the public API
 pub use rustix::fd::BorrowedFd;
 pub use rustix::io::Errno;
-pub use rustix::io::{IoSlice, IoSliceMut};
 pub use rustix::io_uring::{
-    io_uring_params, IoringEnterFlags, IoringOp, IoringSqeFlags, ReadWriteFlags,
+    io_uring_params, iovec, IoringEnterFlags, IoringOp, IoringSqeFlags,
+    ReadWriteFlags,
 };
 
 use core::ffi::c_void;
@@ -731,7 +731,10 @@ mod zig_tests {
             unsafe { ring.register_files(&registered_fds).unwrap() };
 
         let mut buffer = [42u8; 128];
-        let iovecs = [IoSliceMut::new(&mut buffer)];
+        let iovecs = [iovec {
+            iov_base: buffer.as_mut_ptr().cast(),
+            iov_len: buffer.len(),
+        }];
         let sqe = ring.get_sqe().unwrap();
         sqe.prep_readv_fixed(0xcccccccc, fd_index, &iovecs, 0);
         assert_eq!(sqe.opcode, IoringOp::Readv);
@@ -761,11 +764,17 @@ mod zig_tests {
         let tmp = tempdir().unwrap();
         let fd = temp_file(&tmp, "test_io_uring_writev_fsync_readv");
 
-        const BUFFER_WRITE: [u8; 128] = [42; 128];
-        let iovecs_write = [IoSlice::new(&BUFFER_WRITE)];
+        let mut buffer_write: [u8; 128] = [42; 128];
+        let iovecs_write = [iovec {
+            iov_base: buffer_write.as_mut_ptr().cast(),
+            iov_len: buffer_write.len(),
+        }];
 
         let mut buffer_read = [0u8; 128];
-        let mut iovecs_read = [IoSliceMut::new(&mut buffer_read)];
+        let mut iovecs_read = [iovec {
+            iov_base: buffer_read.as_mut_ptr().cast(),
+            iov_len: buffer_read.len(),
+        }];
 
         {
             let sqe = ring.get_sqe().unwrap();
@@ -795,7 +804,7 @@ mod zig_tests {
 
         let cqe = unsafe { ring.copy_cqe() }.unwrap();
         assert_eq!(cqe.user_data.u64_(), 0xdddddddd);
-        assert_eq!(cqe.res, BUFFER_WRITE.len().try_into().unwrap());
+        assert_eq!(cqe.res, buffer_write.len().try_into().unwrap());
         assert_eq!(cqe.flags, IoringCqeFlags::empty());
         assert_eq!(ring.cq_ready(), 2);
 
@@ -811,7 +820,7 @@ mod zig_tests {
         assert_eq!(cqe.flags, IoringCqeFlags::empty());
         assert_eq!(ring.cq_ready(), 0);
 
-        assert_eq!(&BUFFER_WRITE[0..], &buffer_read[0..]);
+        assert_eq!(&buffer_write[0..], &buffer_read[0..]);
         assert_ring_clean(&mut ring);
     }
 

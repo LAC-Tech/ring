@@ -37,7 +37,6 @@ pub use rustix::io_uring::{
     ReadWriteFlags,
 };
 
-use core::ffi::c_void;
 use core::ptr::null;
 use core::{assert, assert_eq, assert_ne, cmp};
 use rustix::fd::{AsFd, OwnedFd};

@@ -1019,5 +1019,15 @@ mod zig_tests {
         assert_eq!(cqe_read.user_data.u64_(), 0x12121212);
         assert_eq!(cqe_read.res, buffers[1].iov_len as i32);
         assert!(cqe_read.flags.is_empty());
+
+        let copy = unsafe {
+            core::slice::from_raw_parts(buffers[1].iov_base.cast::<u8>(), 11)
+        };
+
+        assert_eq!(&copy[0..3], b"\x00\x00\x00");
+        assert_eq!(&copy[3..9], b"foobar");
+        assert_eq!(&copy[9..11], b"zz");
+
+        assert_ring_clean(&mut ring);
     }
 }

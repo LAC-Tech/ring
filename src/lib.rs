@@ -983,7 +983,7 @@ mod zig_tests {
         raw_buffers[0].fill(b'z');
         raw_buffers[0][.."foobar".len()].copy_from_slice(b"foobar");
 
-        let buffers = [
+        let mut buffers = [
             iovec {
                 iov_base: raw_buffers[0].as_mut_ptr().cast(),
                 iov_len: raw_buffers[0].len(),
@@ -994,14 +994,30 @@ mod zig_tests {
             },
         ];
 
-        let registered = unsafe { ring.register_buffers(&buffers).unwrap() };
+        unsafe { ring.register_buffers(&buffers) }.unwrap();
 
-        {
-            let sqe = ring.get_sqe().unwrap();
-            sqe.prep_write_fixed(0x45454545, fd.as_fd(), &buffers[0], 3, 0);
-            assert_eq!(sqe.opcode, IoringOp::WriteFixed);
-            assert_eq!(sqe.off(), 3);
-            sqe.flags.set(IoringSqeFlags::IO_LINK, true);
-        }
+        let sqe_write = ring.get_sqe().unwrap();
+        sqe_write.prep_write_fixed(0x45454545, fd.as_fd(), &buffers[0], 3, 0);
+        assert_eq!(sqe_write.opcode, IoringOp::WriteFixed);
+        assert_eq!(sqe_write.off(), 3);
+        sqe_write.flags.set(IoringSqeFlags::IO_LINK, true);
+
+        let sqe_read = ring.get_sqe().unwrap();
+        sqe_read.prep_read_fixed(0x12121212, fd.as_fd(), &mut buffers[1], 0, 1);
+        assert_eq!(sqe_read.opcode, IoringOp::ReadFixed);
+        assert_eq!(sqe_read.off(), 0);
+
+        assert_eq!(unsafe { ring.submit() }, Ok(2));
+
+        let cqe_write = unsafe { ring.copy_cqe() }.unwrap();
+        let cqe_read = unsafe { ring.copy_cqe() }.unwrap();
+
+        assert_eq!(cqe_write.user_data.u64_(), 0x45454545);
+        assert_eq!(cqe_write.res, buffers[0].iov_len as i32);
+        assert!(cqe_write.flags.is_empty());
+
+        assert_eq!(cqe_read.user_data.u64_(), 0x12121212);
+        assert_eq!(cqe_read.res, buffers[1].iov_len as i32);
+        assert!(cqe_read.flags.is_empty());
     }
 }

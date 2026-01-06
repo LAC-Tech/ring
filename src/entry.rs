@@ -196,4 +196,19 @@ impl Sqe {
         self.buf.buf_index = buffer_index;
         self.user_data.u64_ = user_data;
     }
+
+    pub fn prep_read_fixed(
+        &mut self,
+        user_data: u64,
+        fd: BorrowedFd,
+        buffer: &mut iovec,
+        offset: u64,
+        buffer_index: u16,
+    ) {
+        self.opcode = IoringOp::ReadFixed;
+        self.fd = fd.as_raw_fd();
+        self.set_buf(buffer.iov_base, buffer.iov_len, offset);
+        self.buf.buf_index = buffer_index;
+        self.user_data.u64_ = user_data;
+    }
 }

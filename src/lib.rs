@@ -1036,7 +1036,14 @@ mod zig_tests {
     fn openat() {
         let mut ring = IoUring::new(1).unwrap();
         let tmp = tempfile::TempDir::new().unwrap();
-        let tmp = std::fs::File::open(tmp.path()).unwrap();
+        //let tmp = std::fs::File::open(tmp.path()).unwrap();
+        let tmp = fs::openat(
+            CWD,
+            tmp.path(),
+            OFlags::RDONLY | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .unwrap();
 
         let path = c"test_io_uring_openat";
 

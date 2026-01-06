@@ -1,7 +1,7 @@
 use core::cmp;
 use core::ffi::c_void;
 use core::mem::size_of;
-use core::ops::{Index, IndexMut};
+use core::ops::{Deref, DerefMut};
 use core::ptr;
 use core::sync::atomic::{AtomicU32, Ordering};
 use rustix::fd::BorrowedFd;
@@ -57,24 +57,11 @@ impl Mmap {
         Ok(Self { ptr, len: size })
     }
 
-    fn check_bounds(&self, offset: u32, size: usize) {
-        let end =
-            (offset as usize).checked_add(size).expect("mmap offset overflow");
-        assert!(
-            end <= self.len,
-            "mmap access out of bounds: offset {} size {} len {}",
-            offset,
-            size,
-            self.len
-        );
-    }
-
     /// # Safety
     ///
     /// The caller must ensure that the memory at `byte_offset` is valid for
     /// mutation as type `T` and follows Rust's aliasing rules.
     unsafe fn mut_ptr_at<T>(&mut self, byte_offset: u32) -> *mut T {
-        self.check_bounds(byte_offset, size_of::<T>());
         self.ptr.cast::<u8>().add(byte_offset as usize).cast::<T>()
     }
 
@@ -83,7 +70,6 @@ impl Mmap {
     /// The caller must ensure that the memory at `byte_offset` is a valid
     /// representation of type `T`.
     unsafe fn ptr_at<T>(&self, byte_offset: u32) -> *const T {
-        self.check_bounds(byte_offset, size_of::<T>());
         (self.ptr as *const u8).add(byte_offset as usize).cast::<T>()
     }
 
@@ -93,6 +79,15 @@ impl Mmap {
     /// u32.
     unsafe fn u32_at(&self, byte_offset: u32) -> u32 {
         *self.ptr_at(byte_offset)
+    }
+
+    /// # Safety
+    ///
+    /// The caller must ensure that the memory starting at `byte_offset` is a
+    /// valid representation of `len` elements of type `T`.
+    unsafe fn raw_slice_at<T>(&self, byte_offset: u32, len: u32) -> *mut [T] {
+        let ptr = self.ptr.cast::<u8>().add(byte_offset as usize).cast::<T>();
+        ptr::slice_from_raw_parts_mut(ptr, len as usize)
     }
 }
 
@@ -127,21 +122,21 @@ impl Sqes {
     }
 }
 
-impl Index<u32> for Sqes {
-    type Output = Sqe;
+impl Deref for Sqes {
+    type Target = [Sqe];
 
-    fn index(&self, idx: u32) -> &Self::Output {
-        let byte_offset = idx * SQE_SIZE;
-        // SAFETY: ptr_at checks bounds, T is Copy so valid to read
-        unsafe { &*self.0.ptr_at::<Self::Output>(byte_offset) }
+    fn deref(&self) -> &Self::Target {
+        // SAFETY: mmap is valid for len * SQE_SIZE bytes
+        unsafe { &*ptr::slice_from_raw_parts(self.0.ptr.cast(), self.0.len) }
     }
 }
 
-impl IndexMut<u32> for Sqes {
-    fn index_mut(&mut self, idx: u32) -> &mut Self::Output {
-        let byte_offset = idx * SQE_SIZE;
-        // SAFETY: mut_ptr_at checks bounds, T is Copy so valid to write
-        unsafe { &mut *self.0.mut_ptr_at::<Self::Output>(byte_offset) }
+impl DerefMut for Sqes {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        // SAFETY: mmap is valid for len * SQE_SIZE bytes
+        unsafe {
+            &mut *ptr::slice_from_raw_parts_mut(self.0.ptr.cast(), self.0.len)
+        }
     }
 }
 
@@ -248,12 +243,14 @@ impl Ioring {
 
     pub fn sqe_indices(&mut self) -> &mut [u32] {
         // SAFETY: Offset and length provided by the kernel
-        unsafe { self.mut_slice_at::<u32>(self.sq_off.array, self.sq_entries) }
+        unsafe {
+            &mut *self.mmap.raw_slice_at(self.sq_off.array, self.sq_entries)
+        }
     }
 
     pub fn cqes(&self) -> &[Cqe] {
         // SAFETY: Offset and length provided by the kernel
-        unsafe { self.slice_at::<Cqe>(self.cq_off.cqes, self.cq_entries) }
+        unsafe { &*self.mmap.raw_slice_at(self.cq_off.cqes, self.cq_entries) }
     }
 
     pub fn cq_head(&self) -> u32 {
@@ -295,32 +292,5 @@ impl Ioring {
     /// atomic access as a u32.
     unsafe fn atomic_u32_at(&mut self, byte_offset: u32) -> &AtomicU32 {
         AtomicU32::from_ptr(self.mmap.mut_ptr_at(byte_offset))
-    }
-
-    unsafe fn raw_slice_at<T>(&self, byte_offset: u32, len: u32) -> *mut [T] {
-        self.mmap.check_bounds(byte_offset, (len as usize) * size_of::<T>());
-        let ptr =
-            self.mmap.ptr.cast::<u8>().add(byte_offset as usize).cast::<T>();
-        ptr::slice_from_raw_parts_mut(ptr, len as usize)
-    }
-
-    /// # Safety
-    ///
-    /// The caller must ensure that the memory starting at `byte_offset` is a
-    /// valid representation of `len` elements of type `T`.
-    unsafe fn slice_at<T>(&self, byte_offset: u32, len: u32) -> &[T] {
-        &*self.raw_slice_at(byte_offset, len)
-    }
-
-    /// # Safety
-    ///
-    /// The caller must ensure that the memory starting at `byte_offset` is a
-    /// valid representation of `len` elements of type `T`.
-    unsafe fn mut_slice_at<T>(
-        &mut self,
-        byte_offset: u32,
-        len: u32,
-    ) -> &mut [T] {
-        &mut *self.raw_slice_at(byte_offset, len)
     }
 }

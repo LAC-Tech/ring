@@ -185,7 +185,8 @@ impl IoUring {
             return Err(err::GetSqe::SubmissionQueueFull);
         }
 
-        let sqe = &mut self.sq.sqes[self.sq.sqe_tail & self.sq.mask];
+        let index = (self.sq.sqe_tail & self.sq.mask) as usize;
+        let sqe = &mut self.sq.sqes[index];
         self.sq.sqe_tail = next;
         Ok(sqe)
     }

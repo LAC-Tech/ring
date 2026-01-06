@@ -474,7 +474,7 @@ impl IoUring {
         io_uring_register(
             self.fd(),
             IoringRegisterOp::RegisterFiles,
-            fds.as_ptr().cast::<c_void>(),
+            fds.as_ptr().cast(),
             fds.len().try_into().expect("length of fds must fit in a u32"),
         )
     }
@@ -493,6 +493,27 @@ impl IoUring {
             null(),
             0,
         )
+    }
+
+    /// Registers an array of buffers for use with `read_fixed` and
+    /// `write_fixed`.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that no pending SQEs reference the registered
+    /// buffers.
+    pub fn register_buffers(&mut self, buffers: &[iovec]) -> io::Result<u32> {
+        unsafe {
+            io_uring_register(
+                self.fd(),
+                IoringRegisterOp::RegisterFiles,
+                buffers.as_ptr().cast(),
+                buffers
+                    .len()
+                    .try_into()
+                    .expect("length of buffers must fit in a u32"),
+            )
+        }
     }
 }
 

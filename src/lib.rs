@@ -507,7 +507,7 @@ impl IoUring {
     ) -> io::Result<u32> {
         io_uring_register(
             self.fd(),
-            IoringRegisterOp::RegisterFiles,
+            IoringRegisterOp::RegisterBuffers,
             buffers.as_ptr().cast(),
             buffers
                 .len()
@@ -995,5 +995,13 @@ mod zig_tests {
         ];
 
         let registered = unsafe { ring.register_buffers(&buffers).unwrap() };
+
+        {
+            let sqe = ring.get_sqe().unwrap();
+            sqe.prep_write_fixed(0x45454545, fd.as_fd(), &buffers[0], 3, 0);
+            assert_eq!(sqe.opcode, IoringOp::WriteFixed);
+            assert_eq!(sqe.off(), 3);
+            sqe.flags.set(IoringSqeFlags::IO_LINK, true);
+        }
     }
 }

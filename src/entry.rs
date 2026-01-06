@@ -1,4 +1,5 @@
 use core::ffi::c_void;
+use rustix::buffer;
 use rustix::fd::{AsRawFd, BorrowedFd, RawFd};
 use rustix::io::ReadWriteFlags;
 use rustix::io_uring::{
@@ -178,6 +179,21 @@ impl Sqe {
         self.addr_or_splice_off_in.splice_off_in = off_in;
         self.splice_fd_in_or_file_index_or_addr_len.splice_fd_in =
             fd_in.as_raw_fd();
+        self.user_data.u64_ = user_data;
+    }
+
+    pub fn prep_write_fixed(
+        &mut self,
+        user_data: u64,
+        fd: BorrowedFd,
+        buffer: &iovec,
+        offset: u64,
+        buffer_index: u16,
+    ) {
+        self.opcode = IoringOp::WriteFixed;
+        self.fd = fd.as_raw_fd();
+        self.set_buf(buffer.iov_base, buffer.iov_len, offset);
+        self.buf.buf_index = buffer_index;
         self.user_data.u64_ = user_data;
     }
 }

@@ -865,6 +865,9 @@ mod zig_tests {
     // TODO: this is slow (5+ seconds) when spawned from a thread, but instant
     // when spawned from the main thread - see examples/
     // Same story when run from liburing - see foreign_examples/
+    //
+    // This is a bug in the linux kernel:
+    // https://lore.kernel.org/io-uring/f98f318f-0c3b-4b01-afb2-2b276f3fe6cd@kernel.dk/
     #[test]
     fn splice_read() {
         let mut ring = IoUring::new(4).unwrap();

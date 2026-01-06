@@ -1,5 +1,6 @@
-use core::ffi::c_void;
+use core::ffi::{c_void, CStr};
 use rustix::fd::{AsRawFd, BorrowedFd, RawFd};
+use rustix::fs::{Mode, OFlags};
 use rustix::io::ReadWriteFlags;
 use rustix::io_uring::{
     addr3_or_cmd_union, addr_or_splice_off_in_union, buf_union, io_uring_ptr,
@@ -208,6 +209,21 @@ impl Sqe {
         self.fd = fd.as_raw_fd();
         self.set_buf(buffer.iov_base, buffer.iov_len, offset);
         self.buf.buf_index = buffer_index;
+        self.user_data.u64_ = user_data;
+    }
+
+    pub fn prep_openat(
+        &mut self,
+        user_data: u64,
+        fd: BorrowedFd,
+        path: &CStr,
+        flags: OFlags,
+        mode: Mode,
+    ) {
+        self.opcode = IoringOp::Openat;
+        self.fd = fd.as_raw_fd();
+        self.set_buf(path.as_ptr(), mode.as_raw_mode() as usize, 0);
+        self.op_flags.open_flags = flags;
         self.user_data.u64_ = user_data;
     }
 }

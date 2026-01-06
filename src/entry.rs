@@ -2,6 +2,7 @@ use core::ffi::{c_void, CStr};
 use rustix::fd::{AsRawFd, BorrowedFd, RawFd};
 use rustix::fs::{Mode, OFlags};
 use rustix::io::ReadWriteFlags;
+use rustix::io_uring::IoringOp::*;
 use rustix::io_uring::{
     addr3_or_cmd_union, addr_or_splice_off_in_union, buf_union, io_uring_ptr,
     io_uring_user_data, ioprio_union, iovec, len_union, off_or_addr2_union,
@@ -68,7 +69,7 @@ impl Sqe {
     }
 
     pub fn prep_nop(&mut self, user_data: u64) {
-        self.opcode = IoringOp::Nop;
+        self.opcode = Nop;
         self.user_data = user_data.into();
     }
 
@@ -78,7 +79,7 @@ impl Sqe {
         fd: BorrowedFd,
         flags: ReadWriteFlags,
     ) {
-        self.opcode = IoringOp::Fsync;
+        self.opcode = Fsync;
         self.fd = fd.as_raw_fd();
         self.op_flags.rw_flags = flags;
         self.user_data.u64_ = user_data;
@@ -102,7 +103,7 @@ impl Sqe {
         buf: &mut [u8],
         offset: u64,
     ) {
-        self.opcode = IoringOp::Read;
+        self.opcode = Read;
         self.fd = fd.as_raw_fd();
         self.set_buf(buf.as_ptr(), buf.len(), offset);
         self.user_data.u64_ = user_data;
@@ -115,7 +116,7 @@ impl Sqe {
         iovecs: &[iovec],
         offset: u64,
     ) {
-        self.opcode = IoringOp::Readv;
+        self.opcode = Readv;
         self.fd = fd.as_raw_fd();
         self.set_buf(iovecs.as_ptr(), iovecs.len(), offset);
         self.user_data.u64_ = user_data;
@@ -128,7 +129,7 @@ impl Sqe {
         iovecs: &[iovec],
         offset: u64,
     ) {
-        self.opcode = IoringOp::Readv;
+        self.opcode = Readv;
         self.fd = file_index
             .try_into()
             .expect("fixed file index must fit into a u32");
@@ -144,7 +145,7 @@ impl Sqe {
         buf: &[u8],
         offset: u64,
     ) {
-        self.opcode = IoringOp::Write;
+        self.opcode = Write;
         self.fd = fd.as_raw_fd();
         self.set_buf(buf.as_ptr(), buf.len(), offset);
         self.user_data.u64_ = user_data;
@@ -157,7 +158,7 @@ impl Sqe {
         iovecs: &[iovec],
         offset: u64,
     ) {
-        self.opcode = IoringOp::Writev;
+        self.opcode = Writev;
         self.fd = fd.as_raw_fd();
         self.set_buf(iovecs.as_ptr(), iovecs.len(), offset);
         self.user_data.u64_ = user_data;
@@ -172,7 +173,7 @@ impl Sqe {
         off_out: u64,
         len: usize,
     ) {
-        self.opcode = IoringOp::Splice;
+        self.opcode = Splice;
         self.fd = fd_out.as_raw_fd();
         self.set_len(len);
         self.off_or_addr2.off = off_out;
@@ -190,7 +191,7 @@ impl Sqe {
         offset: u64,
         buffer_index: u16,
     ) {
-        self.opcode = IoringOp::WriteFixed;
+        self.opcode = WriteFixed;
         self.fd = fd.as_raw_fd();
         self.set_buf(buffer.iov_base, buffer.iov_len, offset);
         self.buf.buf_index = buffer_index;
@@ -205,7 +206,7 @@ impl Sqe {
         offset: u64,
         buffer_index: u16,
     ) {
-        self.opcode = IoringOp::ReadFixed;
+        self.opcode = ReadFixed;
         self.fd = fd.as_raw_fd();
         self.set_buf(buffer.iov_base, buffer.iov_len, offset);
         self.buf.buf_index = buffer_index;
@@ -220,7 +221,7 @@ impl Sqe {
         flags: OFlags,
         mode: Mode,
     ) {
-        self.opcode = IoringOp::Openat;
+        self.opcode = Openat;
         self.fd = fd.as_raw_fd();
         self.set_buf(path.as_ptr(), mode.as_raw_mode() as usize, 0);
         self.op_flags.open_flags = flags;

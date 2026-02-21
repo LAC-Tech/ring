@@ -153,13 +153,13 @@ impl<'a, const N: usize> ReadBuf<N> for ReadBufStack<'a, N> {
 
 #[derive(Debug)]
 pub struct ReadBufHeap<'a, const N: usize> {
-    bytes: Box<mem::MaybeUninit<[u8; N]>>,
+    bytes: mem::MaybeUninit<[u8; N]>,
     _phantom: marker::PhantomData<&'a IoUring>,
 }
 
 pub fn read_buf_heap<'a, const N: usize>() -> ReadBufHeap<'a, N> {
     ReadBufHeap {
-        bytes: Box::new(mem::MaybeUninit::uninit()),
+        bytes: mem::MaybeUninit::uninit(),
         _phantom: marker::PhantomData,
     }
 }

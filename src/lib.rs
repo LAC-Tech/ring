@@ -23,6 +23,8 @@
 #![doc = include_str!("../examples/readme_no_std.rs")]
 //! ```
 
+#![cfg_attr(not(feature = "std"), no_std)]
+
 mod mmap;
 pub mod prep;
 

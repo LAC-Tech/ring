@@ -1,6 +1,6 @@
 use core::ffi::*;
 use core::ptr::*;
-use std::mem;
+use core::mem;
 //use rustix::fd::*;
 use rustix::fs::*;
 use rustix::io::ReadWriteFlags;

@@ -7,7 +7,6 @@ use core::sync::atomic::*;
 use rustix::fd::*;
 use rustix::io_uring::*;
 use rustix::*;
-use std::os::fd::AsFd;
 
 use crate::{Cqe, Sqe};
 
